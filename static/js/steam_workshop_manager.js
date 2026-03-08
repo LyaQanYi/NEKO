@@ -1769,7 +1769,7 @@ function renderSubscriptionsPage() {
                     </div>
                     <div class="card-info-grid">
                         <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.subscribed_date') : '订阅日期:'}</span> <span class="info-value">${formattedItem.subscribedDate}</span></div>
-                        <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.last_updated') : '最后更新:'}</span> <span class="info-value">${formattedItem.lastUpdated}</span></div>
+                        <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.last_updated') : '上次更新:'}</span> <span class="info-value">${formattedItem.lastUpdated}</span></div>
                         <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.size') : '大小:'}</span> <span class="info-value">${formattedItem.size}</span></div>
                     </div>
                     ${formattedItem.state && formattedItem.state.downloading && item.downloadProgress ?
@@ -2060,7 +2060,7 @@ function viewItemDetails(itemId) {
                     </div>
                 </p>
                 <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.subscribed_date') : '订阅日期:'}</span> ${formattedItem.subscribedDate}</p>
-                <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.last_updated') : '最后更新:'}</span> ${formattedItem.lastUpdated}</p>
+                <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.last_updated') : '上次更新:'}</span> ${formattedItem.lastUpdated}</p>
                 <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.size') : '大小:'}</span> ${formattedItem.size}</p>
                 <p class="item-info-item">
                     <span class="item-info-label">${window.t ? window.t('steam.status_label') : '状态:'}</span>
