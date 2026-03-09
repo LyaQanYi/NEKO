@@ -627,6 +627,7 @@
         "siliconAssist": "SiliconFlow: Выгодно, поддерживает Агента",
         "openaiAssist": "OpenAI: Мощное управление памятью",
         "geminiAssist": "Gemini: Отличный интеллект, недоступен в Китае",
+        "kimiAssist": "Kimi: Доступен в Китае, поддерживает длинный контекст и визуализацию",
         "assistApiNote": "Примечание: Только Alibaba поддерживает пользовательский голос. GLM и StepFun не рекомендуются.",
         "assistApiKeyQwen": "Вспомогательный API Key — Alibaba",
         "assistApiKeyOpenai": "Вспомогательный API Key — OpenAI",
@@ -634,6 +635,7 @@
         "assistApiKeyStep": "Вспомогательный API Key — StepFun",
         "assistApiKeySilicon": "Вспомогательный API Key — SiliconFlow",
         "assistApiKeyGemini": "Вспомогательный API Key — Gemini",
+        "assistApiKeyKimi": "Вспомогательный API Key — Kimi",
         "assistApiKeyHint": "(Требуется только когда вспомогательный API — {{provider}})",
         "assistApiKeyPlaceholder": "Необязательно, по умолчанию основной API Key",
         "providerNames": {
@@ -802,9 +804,7 @@
         },
         "loadConfigFailed": "Не удалось загрузить конфигурацию, обновите страницу",
         "errorGettingCurrentApiKey": "Ошибка получения текущего API Key",
-        "getCurrentApiKeyFailed": "Не удалось получить текущий API Key",
-        "assistApiKeyKimi": "Вспомогательный API Key - Kimi",
-        "kimiAssist": "Kimi: доступен в Китае, поддерживает длинный контекст и визуальные функции"
+        "getCurrentApiKeyFailed": "Не удалось получить текущий API Key"
     },
     "live2d": {
         "manager": "Менеджер моделей Live2D",
