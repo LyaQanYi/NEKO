@@ -4419,7 +4419,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         let failCount = 0;
         let lastErrorMessage = '';
 
-        for (const [modelName, modelInfo] of selectedDeleteModels) {
+        for (const [modelName, modelInfo] of modelsToDelete) {
             try {
                 // 根据模型类型选择正确的删除接口
                 const deleteUrl = modelInfo.type === 'vrm'

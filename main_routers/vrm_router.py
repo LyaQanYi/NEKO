@@ -517,13 +517,16 @@ def delete_vrm_model(model_name: str):
 
         vrm_path.unlink()
 
-        # 同时删除关联的情感映射配置
+        # 同时删除关联的情感映射配置（仅当没有同名内置模型时）
         emotion_config = _get_emotion_config_path(model_name)
         if emotion_config and emotion_config.is_file():
-            try:
-                emotion_config.unlink()
-            except Exception as e:
-                logger.warning(f"删除情感映射配置失败: {e}")
+            # 检查内置目录是否存在同名 VRM，避免删除共享配置
+            builtin_vrm = config_mgr.project_root / "static" / "vrm" / f"{model_name}.vrm"
+            if not builtin_vrm.is_file():
+                try:
+                    emotion_config.unlink()
+                except Exception as e:
+                    logger.warning(f"删除情感映射配置失败: {e}")
 
         logger.info(f"已删除VRM模型: {model_name}")
         return {"success": True, "message": f"模型 {model_name} 已成功删除"}
