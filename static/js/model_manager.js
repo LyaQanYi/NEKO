@@ -4290,7 +4290,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 删除模型功能
-    let selectedDeleteModels = new Set();
+    let selectedDeleteModels = new Map();
 
     function showDeleteModelModal() {
         if (deleteModelModal) {
@@ -4361,13 +4361,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         item.style.opacity = '0.6';
                     }
 
-                    if (model.type === 'vrm') {
-                        checkbox.setAttribute('data-type', 'vrm');
-                    }
-
                     checkbox.addEventListener('change', (e) => {
                         if (e.target.checked) {
-                            selectedDeleteModels.add(e.target.value);
+                            selectedDeleteModels.set(e.target.value, { name: model.name, type: model.type || 'live2d' });
                         } else {
                             selectedDeleteModels.delete(e.target.value);
                         }
@@ -4418,17 +4414,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         confirmDeleteBtn.textContent = t('live2d.deleting', '删除中...');
 
         const currentModelName = currentModelInfo ? currentModelInfo.name : null;
-        const modelsToDelete = new Set(selectedDeleteModels);
+        const modelsToDelete = new Map(selectedDeleteModels);
         let successCount = 0;
         let failCount = 0;
         let lastErrorMessage = '';
 
-        for (const modelName of selectedDeleteModels) {
+        for (const [modelName, modelInfo] of selectedDeleteModels) {
             try {
                 // 根据模型类型选择正确的删除接口
-                const checkbox = document.querySelector(`input[type="checkbox"][value="${CSS.escape(modelName)}"]`);
-                const isVrm = checkbox && checkbox.getAttribute('data-type') === 'vrm';
-                const deleteUrl = isVrm
+                const deleteUrl = modelInfo.type === 'vrm'
                     ? `/api/model/vrm/model/${encodeURIComponent(modelName)}`
                     : `/api/live2d/model/${encodeURIComponent(modelName)}`;
                 // 使用 RequestHelper 确保统一的错误处理和超时
@@ -4477,7 +4471,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 modelSelect.appendChild(option);
             });
 
-            if (successCount > 0 && currentModelName && modelsToDelete.has(currentModelName)) {
+            if (successCount > 0 && currentModelName && modelsToDelete.has(currentModelName) && modelsToDelete.get(currentModelName).type !== 'vrm') {
                 const maoProModel = availableModels.find(m => m.name === 'mao_pro');
                 let fallbackModel = maoProModel;
                 if (!fallbackModel && Array.isArray(availableModels) && availableModels.length > 0) {

@@ -513,7 +513,7 @@ def delete_vrm_model(model_name: str):
 
         # 只允许删除用户目录下的 VRM 模型
         if not vrm_path.is_file():
-            return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
+            return JSONResponse(status_code=404, content={"success": False, "error": f"未在用户目录中找到模型 {model_name}，可能是内置模型，无法删除"})
 
         vrm_path.unlink()
 
