@@ -21,6 +21,343 @@
     function resetSessionButton() { return document.getElementById('resetSessionButton'); }
     function statusElement()      { return document.getElementById('status'); }
 
+    // ======================== 屏幕共享开关按钮（设置面板内嵌） ========================
+    // 开关按钮从屏幕源子窗口底部移到「屏幕共享」与「选择麦克风」两个设置项中间；
+    // 启用时播放像素扫过动画（参考视频按钮的像素填充效果）。
+    // 共享状态以隐藏的 #screenButton 的 .active class 为准（见 common_ui.js）。
+
+    var shareToggleButtonRegistry = [];
+    var shareToggleStateObserver = null;
+    var shareToggleObserverRetryTimer = null;
+
+    function isScreenShareActive() {
+        var btn = screenButton();
+        return !!(btn && btn.classList.contains('active'));
+    }
+
+    function injectShareToggleStyles() {
+        if (document.getElementById('neko-share-toggle-styles')) return;
+        var style = document.createElement('style');
+        style.id = 'neko-share-toggle-styles';
+        style.textContent = [
+            // 未启用：白色胶囊轨道（仿参考视频）
+            '.neko-share-toggle-btn{position:relative;overflow:hidden;width:100%;box-sizing:border-box;min-height:44px;padding:10px 48px;margin:4px 0 6px;border:1px solid rgba(0,0,0,.07);border-radius:999px;background:#f4f4f7;color:var(--neko-popup-text,#333);cursor:pointer;font-size:14px;font-weight:600;pointer-events:auto;transition:color .2s ease,box-shadow .2s ease,transform .1s ease;}',
+            '.neko-share-toggle-btn:hover{box-shadow:inset 0 0 0 1px rgba(0,0,0,.05);}',
+            '.neko-share-toggle-btn:active{transform:scale(.97);}',
+            '.neko-share-toggle-btn:disabled{opacity:.6;cursor:default;}',
+            // 未开语音会话时点击的抖动提示（明确反馈「点到了但不能用」）
+            '@keyframes nekoShareToggleNudge{0%,100%{transform:translateX(0);}25%{transform:translateX(-3px);}75%{transform:translateX(3px);}}',
+            '.neko-share-toggle-btn.is-nudged{animation:nekoShareToggleNudge .12s ease 2;}',
+            '.neko-share-toggle-btn.is-active{color:#fff;}',
+            // 右端的紫色目标点
+            '.neko-share-toggle-btn .neko-share-toggle-goal{position:absolute;z-index:0;top:50%;right:16px;width:6px;height:6px;margin-top:-3px;border-radius:50%;background:#8a5ce8;pointer-events:none;}',
+            '.neko-share-toggle-btn .neko-share-toggle-label{position:relative;z-index:1;display:block;text-align:center;pointer-events:none;transition:color .2s ease;}',
+            // 文字延迟变白：等像素填充波前扫到中部再切换，避免白字落在白轨道上
+            '.neko-share-toggle-btn.is-active .neko-share-toggle-label{transition:color .3s ease .35s;}',
+            // 白色滑块：默认在左端，启用后滑到右端（始终盖在像素层之上）
+            '.neko-share-toggle-btn .neko-share-toggle-knob{position:absolute;z-index:2;top:4px;bottom:4px;left:4px;width:32px;border-radius:10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.18);pointer-events:none;transition:left .4s ease;}',
+            '.neko-share-toggle-btn.is-active .neko-share-toggle-knob{left:calc(100% - 36px);}',
+            // 像素填充画布：低分辨率画布经 CSS 放大 + pixelated，呈现马赛克块感
+            '.neko-share-toggle-btn canvas.neko-share-toggle-fill{position:absolute;inset:0;z-index:0;width:100%;height:100%;pointer-events:none;opacity:0;transition:opacity .12s linear;image-rendering:pixelated;}',
+            '.neko-share-toggle-btn.is-active canvas.neko-share-toggle-fill{opacity:1;}',
+            // 迷你版：嵌在「屏幕共享」设置行右侧的行内胶囊开关（未开启为灰色轨道 + 白色旋钮）
+            '.neko-share-toggle-btn.neko-share-toggle-mini{display:inline-block;width:64px;min-height:26px;height:26px;padding:0;margin:0;flex-shrink:0;align-self:center;cursor:pointer;background:#e2e2e8;border-color:rgba(0,0,0,.05);}',
+            '.neko-share-toggle-mini .neko-share-toggle-label{display:none;}',
+            '.neko-share-toggle-mini .neko-share-toggle-knob{width:18px;top:3px;bottom:3px;left:3px;border-radius:7px;}',
+            '.neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}',
+            '.neko-share-toggle-mini .neko-share-toggle-goal{right:8px;width:5px;height:5px;margin-top:-2.5px;}',
+            '.neko-share-toggle-btn.is-busy{opacity:.6;cursor:default;}'
+        ].join('\n');
+        document.head.appendChild(style);
+    }
+
+    // ---- 像素溶解引擎：仿参考视频的随机马赛克扫过效果 ----
+    // 色板以中深紫为主，浅紫仅作零星高光（与参考视频一致）
+    var SHARE_PIXEL_PALETTE = ['#8a5ce8', '#8f63ec', '#9772f0', '#9772f0', '#a181f5', '#a181f5', '#b79fff', '#cdbdff'];
+    var SHARE_PIXEL_CELL_PX = 3;      // 每个像素块的 CSS 尺寸
+    var SHARE_PIXEL_JITTER = 0.2;     // 填充前沿的随机抖动幅度（产生锯齿边缘与前置散点）
+    var SHARE_PIXEL_FADE = 0.15;      // 前沿软过渡宽度（像素透明度渐显，形成渐变边）
+    var SHARE_PIXEL_MIN_ALPHA = 0.3;  // 左端最终透明度上限（形成视频的浅紫渐变尾）
+    var SHARE_PIXEL_FILL_MS = 1300;   // 启用扫过时长
+    var SHARE_PIXEL_SHIMMER_MS = 100; // 填满后像素闪烁间隔
+
+    function createSharePixelFx(canvas) {
+        var ctx = canvas.getContext('2d');
+        var cols = 0;
+        var rows = 0;
+        var seeds = null;   // 前沿抖动随机数
+        var tints = null;   // 每格颜色索引
+        var spans = null;   // 少量格子画成 2x2，模拟视频里大小不一的块
+        var progress = 0;
+        var rafId = null;
+        var shimmerTimer = null;
+
+        function resize() {
+            var host = canvas.parentElement;
+            var w = host ? host.clientWidth : 0;
+            var h = host ? host.clientHeight : 0;
+            var nextCols = Math.max(1, Math.round(w / SHARE_PIXEL_CELL_PX));
+            var nextRows = Math.max(1, Math.round(h / SHARE_PIXEL_CELL_PX));
+            if (nextCols === cols && nextRows === rows && seeds) return;
+            cols = nextCols;
+            rows = nextRows;
+            canvas.width = cols;
+            canvas.height = rows;
+            var count = cols * rows;
+            seeds = new Float32Array(count);
+            tints = new Uint8Array(count);
+            spans = new Uint8Array(count);
+            for (var i = 0; i < count; i++) {
+                seeds[i] = Math.random();
+                tints[i] = (Math.random() * SHARE_PIXEL_PALETTE.length) | 0;
+                spans[i] = Math.random() < 0.12 ? 1 : 0;
+            }
+        }
+
+        function draw() {
+            resize();
+            ctx.clearRect(0, 0, cols, rows);
+            if (progress <= 0) return;
+            var spread = 1 - SHARE_PIXEL_JITTER;
+            for (var y = 0; y < rows; y++) {
+                for (var x = 0; x < cols; x++) {
+                    var i = y * cols + x;
+                    var xNorm = cols <= 1 ? 1 : x / (cols - 1);
+                    // 从右向左推进；阈值叠加随机抖动形成不规则前沿
+                    var threshold = (1 - xNorm) * spread + seeds[i] * SHARE_PIXEL_JITTER;
+                    // 前沿软过渡：刚越线的像素半透明，逐渐加深（视频的渐变边）
+                    var fade = (progress - threshold) / SHARE_PIXEL_FADE;
+                    if (fade > 0) {
+                        var alpha = fade >= 1 ? 1 : fade;
+                        // 越靠左透明度越低，填满后左端保留浅紫渐变尾
+                        alpha *= SHARE_PIXEL_MIN_ALPHA + (1 - SHARE_PIXEL_MIN_ALPHA) * xNorm;
+                        ctx.globalAlpha = alpha;
+                        ctx.fillStyle = SHARE_PIXEL_PALETTE[tints[i]];
+                        var big = spans[i];
+                        ctx.fillRect(x, y, big ? 2 : 1, big ? 2 : 1);
+                    }
+                }
+            }
+            ctx.globalAlpha = 1;
+        }
+
+        function stopShimmer() {
+            if (shimmerTimer) { clearInterval(shimmerTimer); shimmerTimer = null; }
+        }
+
+        function startShimmer() {
+            stopShimmer();
+            // 闪烁点随机出现，但整体沿一个从右向左移动的波前依次点亮（仿参考视频）
+            var sweepX = cols - 1;
+            var band = Math.max(2, Math.round(cols * 0.15));
+            shimmerTimer = setInterval(function () {
+                if (!canvas.isConnected) { stopShimmer(); return; }
+                // 随机改写少量格子的色阶，形成填满后的闪烁感（位置集中在波前附近）
+                var twinkles = Math.max(1, Math.round(cols * rows * 0.025));
+                for (var n = 0; n < twinkles; n++) {
+                    var x = sweepX + ((Math.random() * band) | 0);
+                    if (x >= cols) x = cols - 1;
+                    var y = (Math.random() * rows) | 0;
+                    var i = y * cols + x;
+                    tints[i] = (Math.random() * SHARE_PIXEL_PALETTE.length) | 0;
+                }
+                draw();
+                sweepX -= Math.max(1, Math.round(cols * 0.12));
+                if (sweepX < 0) sweepX = cols - 1;
+            }, SHARE_PIXEL_SHIMMER_MS);
+        }
+
+        function cancelAnimation() {
+            if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+        }
+
+        function animateTo(target, done) {
+            cancelAnimation();
+            var from = progress;
+            var distance = Math.abs(target - from);
+            if (distance <= 0) { if (done) done(); return; }
+            var duration = SHARE_PIXEL_FILL_MS * distance;
+            var startTime = null;
+            function frame(now) {
+                if (!canvas.isConnected) { rafId = null; return; }
+                if (startTime === null) startTime = now;
+                var t = Math.min(1, (now - startTime) / duration);
+                progress = from + (target - from) * t;
+                draw();
+                if (t < 1) {
+                    rafId = requestAnimationFrame(frame);
+                } else {
+                    rafId = null;
+                    if (done) done();
+                }
+            }
+            rafId = requestAnimationFrame(frame);
+        }
+
+        return {
+            activate: function (instant) {
+                resize();
+                stopShimmer();
+                if (instant) {
+                    cancelAnimation();
+                    progress = 1;
+                    draw();
+                    startShimmer();
+                } else {
+                    animateTo(1, startShimmer);
+                }
+            },
+            deactivate: function (instant, done) {
+                stopShimmer();
+                if (instant) {
+                    cancelAnimation();
+                    progress = 0;
+                    draw();
+                    if (done) done();
+                } else {
+                    animateTo(0, done);
+                }
+            },
+            // 已处于开启状态时再次点击：从头重播一次开启扫过动画
+            replay: function () {
+                resize();
+                stopShimmer();
+                progress = 0;
+                draw();
+                animateTo(1, startShimmer);
+            }
+        };
+    }
+
+    function syncShareToggleButtons(instant) {
+        shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });
+        var active = isScreenShareActive();
+        shareToggleButtonRegistry.forEach(function (btn) {
+            if (typeof btn._nekoSetShareActive === 'function') btn._nekoSetShareActive(active, !!instant);
+        });
+    }
+
+    function ensureShareToggleStateObserver() {
+        if (shareToggleStateObserver) return;
+        var target = screenButton();
+        if (!target) {
+            if (!shareToggleObserverRetryTimer) {
+                shareToggleObserverRetryTimer = setTimeout(function () {
+                    shareToggleObserverRetryTimer = null;
+                    ensureShareToggleStateObserver();
+                }, 500);
+            }
+            return;
+        }
+        shareToggleStateObserver = new MutationObserver(function () { syncShareToggleButtons(false); });
+        shareToggleStateObserver.observe(target, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    function createScreenShareToggleButton(options) {
+        injectShareToggleStyles();
+        ensureShareToggleStateObserver();
+
+        var mini = !!(options && options.mini);
+        // 用 span + role=button：迷你版会嵌在设置行 <button> 内，原生 button 嵌套是非法 HTML
+        var button = document.createElement('span');
+        button.className = 'neko-share-toggle-btn' + (mini ? ' neko-share-toggle-mini' : '');
+        button.setAttribute('role', 'button');
+        button.setAttribute('tabindex', '0');
+        button.dataset.nekoScreenShareAction = 'toggle';
+
+        var fill = document.createElement('canvas');
+        fill.className = 'neko-share-toggle-fill';
+        fill.setAttribute('aria-hidden', 'true');
+
+        var goal = document.createElement('span');
+        goal.className = 'neko-share-toggle-goal';
+        goal.setAttribute('aria-hidden', 'true');
+
+        var label = document.createElement('span');
+        label.className = 'neko-share-toggle-label';
+
+        var knob = document.createElement('span');
+        knob.className = 'neko-share-toggle-knob';
+        knob.setAttribute('aria-hidden', 'true');
+
+        button.appendChild(fill);
+        button.appendChild(goal);
+        button.appendChild(label);
+        button.appendChild(knob);
+
+        function shareLabel() { return window.t ? window.t('buttons.screenShare') : 'Screen Share'; }
+        function stopLabel() { return window.t ? window.t('voiceControl.stopShare') : 'Stop Sharing'; }
+
+        var pixelFx = createSharePixelFx(fill);
+        button._nekoSetShareActive = function (active, instant) {
+            label.textContent = active ? stopLabel() : shareLabel();
+            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+            if (button._nekoShareActive === active) return;
+            button._nekoShareActive = active;
+            if (active) {
+                button.classList.add('is-active');
+                pixelFx.activate(!!instant);
+            } else {
+                // 反向溶解期间保持画布可见，结束后再隐藏
+                pixelFx.deactivate(!!instant, function () {
+                    if (!button._nekoShareActive) button.classList.remove('is-active');
+                });
+                if (instant) button.classList.remove('is-active');
+            }
+        };
+
+        async function handleToggleClick(event) {
+            event.stopPropagation();
+            if (button._nekoShareBusy) return;
+            var active = isScreenShareActive();
+            console.log('[屏幕共享开关] 点击, 当前状态:', active ? '共享中' : '未共享', ', 语音会话:', !!window.isRecording);
+            if (active) {
+                // 开启状态下每次点击都重播一次开启时的像素扫过动画
+                pixelFx.replay();
+            }
+            button._nekoShareBusy = true;
+            button.classList.add('is-busy');
+            try {
+                if (active && typeof window.stopScreenSharing === 'function') {
+                    await window.stopScreenSharing();
+                } else if (!active && typeof window.startScreenSharing === 'function') {
+                    if (!window.isRecording) {
+                        // 抖动提示 + Toast，明确告知需要先开语音会话
+                        button.classList.remove('is-nudged');
+                        void button.offsetWidth;
+                        button.classList.add('is-nudged');
+                        setTimeout(function () { button.classList.remove('is-nudged'); }, 300);
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话',
+                                3000
+                            );
+                        }
+                        return;
+                    }
+                    await window.startScreenSharing();
+                }
+            } finally {
+                button._nekoShareBusy = false;
+                button.classList.remove('is-busy');
+                syncShareToggleButtons(false);
+            }
+        }
+
+        button.addEventListener('click', handleToggleClick);
+        button.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                handleToggleClick(event);
+            }
+        });
+
+        shareToggleButtonRegistry.push(button);
+        // 每次重新显示（弹窗重渲染）时，若共享处于开启状态则重播一次开启动画；未开启则直接落位
+        button._nekoSetShareActive(isScreenShareActive(), !isScreenShareActive());
+        return button;
+    }
+
     // ======================== 游戏语音 STT Gate ========================
 
     function getGameVoiceSpeechRecognition() {
@@ -2163,7 +2500,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return panel;
             }
 
-            function createMainActionButton(iconText, label, subLabel, actionKey, onClick) {
+            function createMainActionButton(iconText, label, subLabel, actionKey, onClick, hoverGuard) {
                 var button = document.createElement('button');
                 button.type = 'button';
                 button.dataset.nekoMicMainAction = actionKey;
@@ -2212,6 +2549,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 button.appendChild(arrow);
 
                 function openActionPanel() {
+                    // 悬停守卫：指针在内嵌开关（如屏幕共享开关）上时不展开子面板，避免干扰点击
+                    if (typeof hoverGuard === 'function' && hoverGuard()) {
+                        return Promise.resolve(null);
+                    }
                     button.style.background = 'var(--neko-popup-hover)';
                     return openMicActionPanel(actionKey, onClick).catch(function (error) {
                         console.error('[麦克风弹窗] 子窗口打开失败:', error);
@@ -2319,53 +2660,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     minHeight: '80px'
                 });
                 panelBody.appendChild(screenSourceList);
-                var shareToggleButton = document.createElement('button');
-                shareToggleButton.type = 'button';
-                shareToggleButton.dataset.nekoScreenShareAction = 'toggle';
-                Object.assign(shareToggleButton.style, {
-                    width: '100%',
-                    padding: '9px 12px',
-                    marginTop: '4px',
-                    border: 'none',
-                    borderRadius: '6px',
-                    background: '#4f8cff',
-                    color: '#fff',
-                    cursor: 'pointer',
-                    fontSize: '13px',
-                    fontWeight: '600'
-                });
-                function updateShareToggleLabel() {
-                    var active = !!(S.dom.screenButton && S.dom.screenButton.classList.contains('active'));
-                    shareToggleButton.textContent = active
-                        ? (window.t ? window.t('voiceControl.stopShare') : 'Stop Sharing')
-                        : screenButtonLabel;
-                }
-                shareToggleButton.addEventListener('click', async function (event) {
-                    event.stopPropagation();
-                    var active = !!(S.dom.screenButton && S.dom.screenButton.classList.contains('active'));
-                    shareToggleButton.disabled = true;
-                    try {
-                        if (active && typeof window.stopScreenSharing === 'function') {
-                            await window.stopScreenSharing();
-                        } else if (!active && typeof window.startScreenSharing === 'function') {
-                            if (!window.isRecording) {
-                                if (typeof window.showStatusToast === 'function') {
-                                    window.showStatusToast(
-                                        window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话',
-                                        3000
-                                    );
-                                }
-                                return;
-                            }
-                            await window.startScreenSharing();
-                        }
-                    } finally {
-                        shareToggleButton.disabled = false;
-                        updateShareToggleLabel();
-                    }
-                });
-                updateShareToggleLabel();
-                panelBody.appendChild(shareToggleButton);
+                // 开始/停止共享开关已移至设置面板「屏幕共享」与「选择麦克风」之间
+                // （createScreenShareToggleButton），子窗口仅保留屏幕/窗口源列表。
                 positionMicSubwindow(panel);
                 if (typeof window.renderFloatingScreenSourceList === 'function') {
                     await window.renderFloatingScreenSourceList(screenSourceList, { requireVisible: false });
@@ -2380,14 +2676,34 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var screenButtonLabel = window.t ? window.t('buttons.screenShare') : 'Screen Share';
 
             var firstContent = leftColumn.firstChild;
+            // 悬停守卫：指针落在行内开关上时不展开屏幕源面板，避免面板弹出干扰点击开关
+            var shareToggleButtonHolder = { current: null };
+            function screenRowHoverGuard() {
+                var toggle = shareToggleButtonHolder.current;
+                return !!(toggle && toggle.matches(':hover'));
+            }
             var screenActionButton = createMainActionButton(
                 '\uD83D\uDDA5\uFE0F',
                 screenButtonLabel,
                 window.t ? window.t('app.screenSource.screens') : 'Screens',
                 'screen',
-                openScreenSourceSubwindow
+                openScreenSourceSubwindow,
+                screenRowHoverGuard
             );
             leftColumn.insertBefore(screenActionButton, firstContent);
+            // 合并为一行：行右侧嵌入迷你胶囊开关（替换原来的 chevron 箭头），
+            // 点击行其余位置仍展开屏幕源选择，点击开关本身开始/停止共享
+            var shareToggleButton = createScreenShareToggleButton({ mini: true });
+            shareToggleButtonHolder.current = shareToggleButton;
+            screenActionButton.replaceChild(shareToggleButton, screenActionButton.lastChild);
+            // 屏幕共享行：标题允许换行显示（去掉省略号截断），
+            // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示
+            var screenTextWrap = screenActionButton.children[1];
+            if (screenTextWrap && screenTextWrap.firstChild) {
+                screenTextWrap.firstChild.style.whiteSpace = 'normal';
+                screenTextWrap.firstChild.style.lineHeight = '1.2';
+                screenTextWrap.firstChild.style.overflow = 'visible';
+            }
             var micActionButton = createMainActionButton(
                 '\uD83C\uDFA4',
                 deviceButtonLabel,

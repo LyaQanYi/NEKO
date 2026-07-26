@@ -344,18 +344,74 @@ def test_floating_mic_popup_keeps_speaker_volume_without_microphone_devices():
 
 def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
     source = _read(APP_AUDIO_CAPTURE_PATH)
-    screen_panel = _js_function_block(source, "openScreenSourceSubwindow")
+    toggle_factory = _js_function_block(source, "createScreenShareToggleButton")
 
-    assert "shareToggleButton.dataset.nekoScreenShareAction = 'toggle';" in screen_panel
-    assert "window.startScreenSharing" in screen_panel
-    assert "window.stopScreenSharing" in screen_panel
-    assert "window.t('voiceControl.stopShare')" in screen_panel
-    assert "panelBody.appendChild(shareToggleButton);" in screen_panel
+    assert "button.dataset.nekoScreenShareAction = 'toggle';" in toggle_factory
+    assert "window.startScreenSharing" in toggle_factory
+    assert "window.stopScreenSharing" in toggle_factory
+    assert "window.t('voiceControl.stopShare')" in toggle_factory
     voice_guard = "if (!window.isRecording) {"
     start_call = "await window.startScreenSharing();"
-    assert voice_guard in screen_panel
-    assert "window.t('app.screenShareRequiresVoice')" in screen_panel
-    assert screen_panel.index(voice_guard) < screen_panel.index(start_call)
+    assert voice_guard in toggle_factory
+    assert "window.t('app.screenShareRequiresVoice')" in toggle_factory
+    assert toggle_factory.index(voice_guard) < toggle_factory.index(start_call)
+
+    # 启用动画：像素扫过填充（参考视频按钮的像素动画）
+    assert "neko-share-toggle-fill" in toggle_factory
+    assert "isScreenShareActive()" in toggle_factory
+
+    # 合并为一行：迷你胶囊开关嵌在「屏幕共享」设置行右侧（替换 chevron）
+    render_start = source.index("window.renderFloatingMicList = async function")
+    render_end = source.index("function updateMicListSelection()", render_start)
+    render = source[render_start:render_end]
+    screen_row = "leftColumn.insertBefore(screenActionButton, firstContent);"
+    mic_row = "leftColumn.insertBefore(micActionButton, firstContent);"
+    assert screen_row in render and mic_row in render
+    assert render.index(screen_row) < render.index(mic_row)
+    assert "createScreenShareToggleButton({ mini: true })" in render
+    assert "screenActionButton.replaceChild(shareToggleButton, screenActionButton.lastChild);" in render
+    assert "leftColumn.insertBefore(shareToggleButton, firstContent);" not in render
+
+
+def test_screen_share_toggle_has_pixel_sweep_animation():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    styles = _js_function_block(source, "injectShareToggleStyles")
+
+    # 画布像素层：低分辨率画布 + pixelated 放大呈现马赛克块
+    assert "canvas.neko-share-toggle-fill" in styles
+    assert "image-rendering:pixelated;" in styles
+    assert ".neko-share-toggle-btn.is-active canvas.neko-share-toggle-fill" in styles
+
+    # 像素溶解引擎：随机马赛克从右向左扫过 + 填满后闪烁
+    fx = _js_function_block(source, "createSharePixelFx")
+    assert "SHARE_PIXEL_PALETTE" in fx
+    assert "SHARE_PIXEL_JITTER" in fx
+    assert "requestAnimationFrame" in fx
+    assert "activate" in fx and "deactivate" in fx
+    assert "startShimmer" in fx
+
+    # 按钮使用画布填充层 + 滑块/紫色目标点（复刻参考视频，灰点按需求不实现）
+    toggle_factory = _js_function_block(source, "createScreenShareToggleButton")
+    assert "document.createElement('canvas')" in toggle_factory
+    assert "neko-share-toggle-knob" in toggle_factory
+    assert "neko-share-toggle-dots" not in toggle_factory
+    assert "neko-share-toggle-goal" in toggle_factory
+    assert "pixelFx.activate" in toggle_factory
+    assert "pixelFx.deactivate" in toggle_factory
+
+    # 滑块默认在左端，启用后滑到右端；像素前沿带软过渡与左端渐变尾；含迷你行内变体
+    styles = _js_function_block(source, "injectShareToggleStyles")
+    assert ".neko-share-toggle-btn.is-active .neko-share-toggle-knob{left:calc(100% - 36px);}" in styles
+    assert ".neko-share-toggle-btn.neko-share-toggle-mini" in styles
+    assert ".neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}" in styles
+    fx = _js_function_block(source, "createSharePixelFx")
+    assert "SHARE_PIXEL_FADE" in fx
+    assert "SHARE_PIXEL_MIN_ALPHA" in fx
+
+    # 状态与隐藏 #screenButton 的 .active class 同步
+    assert "isScreenShareActive" in source
+    assert "MutationObserver" in source
+    assert "syncShareToggleButtons" in source
 
 
 def test_mic_main_action_matches_settings_chevron_and_hover_expands():
