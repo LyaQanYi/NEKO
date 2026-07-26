@@ -666,7 +666,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                     }
                 }, 50);
             });
-        } else {
+        } else if (config.id !== 'social' && config.id !== 'goodbye') {
             btn.addEventListener('click', (e) => {
                 console.log(`[Live2D] 按钮被点击: ${config.id}`);
                 e.stopPropagation();

@@ -404,6 +404,9 @@ export default function App() {
           createForgedCardWithLlmStory(pickedSlot, pickedSlot.sourceCharacter || activeCharacterName || ''),
           sleep(1400),
         ])
+        if (forgedCard.storyGenerationStatus === 'temporary-fallback') {
+          throw new Error('forge_story_temporary_fallback')
+        }
         const storedCard = {
           ...forgedCard,
           attribute: forgedCard.attrName,
@@ -417,10 +420,14 @@ export default function App() {
         setMachinePhase('flipping')
         await sleep(650)
         setMachinePhase('revealed')
-      } catch {
+      } catch (error) {
         hasForgedRef.current = false
         setMachineForgedCard(null)
-        setMachineStoryStatus('铸造未完成，请再次点击所选卡片重试。')
+        setMachineStoryStatus(
+          error?.message === 'forge_story_temporary_fallback'
+            ? '故事生成暂时不可用，请再次点击所选卡片重试。'
+            : '铸造未完成，请再次点击所选卡片重试。',
+        )
         setMachinePhase('confirming')
       }
     } else if (machinePhase === 'confirming') {

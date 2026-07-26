@@ -75,7 +75,7 @@ function Test-CardForgeProcess {
 $sensitiveParamPatterns = @(
   '(?i)(--?(?:token|password|secret|api[-_]?key|access[-_]?key|auth)\s*[=: ]\s*)\S+',
   '(?i)(Bearer\s+)\S+',
-  '(?i)(Authorization\s*[:=]\s*)\S+'
+  '(?i)(Authorization\s*[:=]\s*(?:[A-Za-z][A-Za-z0-9_-]*\s+)?)\S+'
 )
 
 function Get-SafeCommandPreview {
