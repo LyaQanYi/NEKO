@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,15 +56,18 @@ async def test_process_requests_keep_language_task_local_across_awaits(monkeypat
     )
     monkeypatch.setattr(routes.review, "maybe_spawn_review", AsyncMock())
 
-    english_result, japanese_result = await asyncio.gather(
-        routes.process_conversation(
-            routes.HistoryRequest(input_history="[]", language="en"),
-            "EnglishNeko",
+    english_result, japanese_result = await asyncio.wait_for(
+        asyncio.gather(
+            routes.process_conversation(
+                routes.HistoryRequest(input_history="[]", language="en"),
+                "EnglishNeko",
+            ),
+            routes.process_conversation(
+                routes.HistoryRequest(input_history="[]", language="ja"),
+                "JapaneseNeko",
+            ),
         ),
-        routes.process_conversation(
-            routes.HistoryRequest(input_history="[]", language="ja"),
-            "JapaneseNeko",
-        ),
+        timeout=2,
     )
 
     assert english_result == {"status": "processed"}
@@ -77,5 +81,31 @@ async def test_process_requests_keep_language_task_local_across_awaits(monkeypat
 def test_all_memory_write_routes_install_request_language_context():
     source = routes.__file__
     assert source is not None
-    route_source = Path(source).read_text(encoding="utf-8")
-    assert route_source.count("with language_context(memory_language):") == 4
+    tree = ast.parse(Path(source).read_text(encoding="utf-8"))
+    expected_handlers = {
+        "cache_conversation",
+        "process_conversation",
+        "process_conversation_for_renew",
+        "settle_conversation",
+    }
+    scoped_handlers: set[str] = set()
+
+    for node in tree.body:
+        if not isinstance(node, ast.AsyncFunctionDef) or node.name not in expected_handlers:
+            continue
+        for child in ast.walk(node):
+            if not isinstance(child, ast.With):
+                continue
+            for item in child.items:
+                context_expr = item.context_expr
+                if (
+                    isinstance(context_expr, ast.Call)
+                    and isinstance(context_expr.func, ast.Name)
+                    and context_expr.func.id == "language_context"
+                    and len(context_expr.args) == 1
+                    and isinstance(context_expr.args[0], ast.Name)
+                    and context_expr.args[0].id == "memory_language"
+                ):
+                    scoped_handlers.add(node.name)
+
+    assert scoped_handlers == expected_handlers
