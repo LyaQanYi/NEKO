@@ -583,6 +583,38 @@ async def test_release_storage_startup_barrier_starts_integration_workers_after_
 
 
 @pytest.mark.unit
+def test_integration_worker_start_failures_are_logged_as_warnings():
+    from app import main_server
+
+    facts_error = RuntimeError("facts worker failed")
+    card_error = RuntimeError("card cache worker failed")
+    create_task = Mock(side_effect=[facts_error, card_error])
+
+    with (
+        patch(
+            "main_logic.facts_sync.start_facts_sync_worker",
+            Mock(return_value=object()),
+        ),
+        patch(
+            "main_logic.card_cache.start_card_cache_puller",
+            Mock(return_value=object()),
+        ),
+        patch.object(main_server.asyncio, "create_task", create_task),
+        patch.object(main_server.logger, "warning") as warning,
+        patch.object(main_server, "_facts_sync_worker_task", None),
+        patch.object(main_server, "_card_cache_worker_task", None),
+    ):
+        main_server._start_neko_servers_integration_workers()
+
+    warning.assert_has_calls(
+        [
+            call("[facts_sync] start worker failed: %s", facts_error),
+            call("[card_cache] start puller failed: %s", card_error),
+        ]
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_stop_integration_workers_cancels_both_background_tasks():
     from app import main_server

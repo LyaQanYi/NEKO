@@ -699,7 +699,7 @@ def _start_neko_servers_integration_workers() -> None:
 
             _facts_sync_worker_task = asyncio.create_task(start_facts_sync_worker())
         except Exception as exc:
-            logger.debug("[facts_sync] start worker failed: %s", exc)
+            logger.warning("[facts_sync] start worker failed: %s", exc)
 
     if _card_cache_worker_task is None or _card_cache_worker_task.done():
         try:
@@ -707,7 +707,7 @@ def _start_neko_servers_integration_workers() -> None:
 
             _card_cache_worker_task = asyncio.create_task(start_card_cache_puller())
         except Exception as exc:
-            logger.debug("[card_cache] start puller failed: %s", exc)
+            logger.warning("[card_cache] start puller failed: %s", exc)
 
 
 async def _stop_neko_servers_integration_workers() -> None:
