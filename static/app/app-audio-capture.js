@@ -1960,10 +1960,81 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             volumeContainer.appendChild(volumeHint);
             leftColumn.appendChild(volumeContainer);
 
+            var MIC_ACTION_HOVER_COLLAPSE_MS = 260;
+            var activeMicActionKey = null;
+            var micActionHoverCollapseTimer = null;
+            var micActionHoverOpenGeneration = 0;
+
+            function getOwnedMicSubwindow() {
+                var ownerSelector = micPopup.id
+                    ? '[data-neko-sidepanel-owner="' + micPopup.id + '"].neko-mic-subwindow'
+                    : '.neko-mic-subwindow';
+                return document.querySelector(ownerSelector);
+            }
+
+            function clearMicActionHoverCollapseTimer() {
+                if (micActionHoverCollapseTimer) {
+                    clearTimeout(micActionHoverCollapseTimer);
+                    micActionHoverCollapseTimer = null;
+                }
+            }
+
+            function isMicActionHoverSurfaceActive() {
+                var hoveredAction = leftColumn.querySelector('[data-neko-mic-main-action]:hover');
+                if (hoveredAction) return true;
+                var panel = getOwnedMicSubwindow();
+                return !!(panel && panel.isConnected && panel.matches(':hover'));
+            }
+
             function closeMicSubwindow() {
+                clearMicActionHoverCollapseTimer();
+                activeMicActionKey = null;
                 var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
                 document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
                     panel.remove();
+                });
+            }
+
+            function scheduleMicActionHoverCollapse() {
+                clearMicActionHoverCollapseTimer();
+                micActionHoverCollapseTimer = setTimeout(function () {
+                    micActionHoverCollapseTimer = null;
+                    if (isMicActionHoverSurfaceActive()) return;
+                    closeMicSubwindow();
+                    leftColumn.querySelectorAll('[data-neko-mic-main-action]').forEach(function (btn) {
+                        btn.style.background = 'transparent';
+                    });
+                }, MIC_ACTION_HOVER_COLLAPSE_MS);
+            }
+
+            function wireMicSubwindowHoverBridge(panel) {
+                if (!panel || panel._nekoMicHoverBridgeWired) return;
+                panel._nekoMicHoverBridgeWired = true;
+                panel.addEventListener('mouseenter', function () {
+                    clearMicActionHoverCollapseTimer();
+                });
+                panel.addEventListener('mouseleave', function () {
+                    scheduleMicActionHoverCollapse();
+                });
+            }
+
+            function openMicActionPanel(actionKey, openFn) {
+                clearMicActionHoverCollapseTimer();
+                var existing = getOwnedMicSubwindow();
+                if (activeMicActionKey === actionKey && existing && existing.isConnected) {
+                    wireMicSubwindowHoverBridge(existing);
+                    return Promise.resolve(existing);
+                }
+                activeMicActionKey = actionKey;
+                var generation = ++micActionHoverOpenGeneration;
+                return Promise.resolve(openFn()).then(function () {
+                    if (generation !== micActionHoverOpenGeneration || activeMicActionKey !== actionKey) return null;
+                    var panel = getOwnedMicSubwindow();
+                    if (panel) {
+                        panel.setAttribute('data-neko-mic-action-key', actionKey);
+                        wireMicSubwindowHoverBridge(panel);
+                    }
+                    return panel;
                 });
             }
 
@@ -1985,7 +2056,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function createMicSubwindow(title, iconText, width) {
-                closeMicSubwindow();
+                // Keep activeMicActionKey; only tear down the previous DOM panel.
+                clearMicActionHoverCollapseTimer();
+                var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
+                document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
+                    panel.remove();
+                });
                 var panel = document.createElement('div');
                 panel.className = 'neko-mic-subwindow';
                 if (micPopup.id) panel.setAttribute('data-neko-sidepanel-owner', micPopup.id);
@@ -2059,7 +2135,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 });
                 closeBtn.addEventListener('mouseenter', function () { closeBtn.style.background = 'var(--neko-popup-hover)'; });
                 closeBtn.addEventListener('mouseleave', function () { closeBtn.style.background = 'transparent'; });
-                closeBtn.addEventListener('click', function (e) { e.stopPropagation(); panel.remove(); });
+                closeBtn.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    closeMicSubwindow();
+                });
 
                 header.appendChild(titleWrap);
                 header.appendChild(closeBtn);
@@ -2084,9 +2163,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return panel;
             }
 
-            function createMainActionButton(iconText, label, subLabel, onClick) {
+            function createMainActionButton(iconText, label, subLabel, actionKey, onClick) {
                 var button = document.createElement('button');
                 button.type = 'button';
+                button.dataset.nekoMicMainAction = actionKey;
                 Object.assign(button.style, {
                     width: '100%',
                     minWidth: '0',
@@ -2116,21 +2196,39 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 subEl.className = 'neko-mic-action-sub-label';
                 subEl.textContent = subLabel || '';
                 Object.assign(subEl.style, { display: 'block', maxWidth: '100%', fontSize: '11px', color: 'var(--neko-popup-text-sub)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                // Match settings menu chevron (Chat Settings / Animation / Advanced).
                 var arrow = document.createElement('span');
-                arrow.textContent = '>';
-                Object.assign(arrow.style, { color: 'var(--neko-popup-text-sub)', flexShrink: '0' });
+                arrow.textContent = '\u203A';
+                Object.assign(arrow.style, {
+                    fontSize: '16px',
+                    color: 'var(--neko-popup-text-sub, #999)',
+                    lineHeight: '1',
+                    flexShrink: '0'
+                });
                 textWrap.appendChild(labelEl);
                 if (subLabel) textWrap.appendChild(subEl);
                 button.appendChild(icon);
                 button.appendChild(textWrap);
                 button.appendChild(arrow);
-                button.addEventListener('mouseenter', function () { button.style.background = 'var(--neko-popup-hover)'; });
-                button.addEventListener('mouseleave', function () { button.style.background = 'transparent'; });
-                button.addEventListener('click', function (e) {
-                    e.stopPropagation();
-                    Promise.resolve(onClick()).catch(function (error) {
+
+                function openActionPanel() {
+                    button.style.background = 'var(--neko-popup-hover)';
+                    return openMicActionPanel(actionKey, onClick).catch(function (error) {
                         console.error('[麦克风弹窗] 子窗口打开失败:', error);
                     });
+                }
+
+                // Hover-to-expand like settings side panels.
+                button.addEventListener('mouseenter', function () {
+                    openActionPanel();
+                });
+                button.addEventListener('mouseleave', function () {
+                    button.style.background = 'transparent';
+                    scheduleMicActionHoverCollapse();
+                });
+                button.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    openActionPanel();
                 });
                 return button;
             }
@@ -2239,7 +2337,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 function updateShareToggleLabel() {
                     var active = !!(S.dom.screenButton && S.dom.screenButton.classList.contains('active'));
                     shareToggleButton.textContent = active
-                        ? (window.t ? window.t('buttons.stopShare') : 'Stop Sharing')
+                        ? (window.t ? window.t('voiceControl.stopShare') : 'Stop Sharing')
                         : screenButtonLabel;
                 }
                 shareToggleButton.addEventListener('click', async function (event) {
@@ -2282,9 +2380,21 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var screenButtonLabel = window.t ? window.t('buttons.screenShare') : 'Screen Share';
 
             var firstContent = leftColumn.firstChild;
-            var screenActionButton = createMainActionButton('\uD83D\uDDA5\uFE0F', screenButtonLabel, window.t ? window.t('app.screenSource.screens') : 'Screens', openScreenSourceSubwindow);
+            var screenActionButton = createMainActionButton(
+                '\uD83D\uDDA5\uFE0F',
+                screenButtonLabel,
+                window.t ? window.t('app.screenSource.screens') : 'Screens',
+                'screen',
+                openScreenSourceSubwindow
+            );
             leftColumn.insertBefore(screenActionButton, firstContent);
-            var micActionButton = createMainActionButton('\uD83C\uDFA4', deviceButtonLabel, currentMicLabel, openMicDeviceSubwindow);
+            var micActionButton = createMainActionButton(
+                '\uD83C\uDFA4',
+                deviceButtonLabel,
+                currentMicLabel,
+                'device',
+                openMicDeviceSubwindow
+            );
             micActionButton.dataset.nekoMicAction = 'device';
             leftColumn.insertBefore(micActionButton, firstContent);
 

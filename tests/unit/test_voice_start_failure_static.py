@@ -349,13 +349,30 @@ def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
     assert "shareToggleButton.dataset.nekoScreenShareAction = 'toggle';" in screen_panel
     assert "window.startScreenSharing" in screen_panel
     assert "window.stopScreenSharing" in screen_panel
-    assert "window.t('buttons.stopShare')" in screen_panel
+    assert "window.t('voiceControl.stopShare')" in screen_panel
     assert "panelBody.appendChild(shareToggleButton);" in screen_panel
     voice_guard = "if (!window.isRecording) {"
     start_call = "await window.startScreenSharing();"
     assert voice_guard in screen_panel
     assert "window.t('app.screenShareRequiresVoice')" in screen_panel
     assert screen_panel.index(voice_guard) < screen_panel.index(start_call)
+
+
+def test_mic_main_action_matches_settings_chevron_and_hover_expands():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    action_button = _js_function_block(source, "createMainActionButton")
+
+    assert "arrow.textContent = '\\u203A';" in action_button or 'arrow.textContent = "\u203A";' in action_button or "arrow.textContent = '\u203A';" in action_button
+    assert "fontSize: '16px'" in action_button
+    assert "button.dataset.nekoMicMainAction = actionKey;" in action_button
+    assert "openMicActionPanel(actionKey, onClick)" in action_button
+    assert "button.addEventListener('mouseenter'" in action_button
+    assert "scheduleMicActionHoverCollapse()" in action_button
+    assert "createMainActionButton(" in source
+    assert "'screen'" in source
+    assert "openScreenSourceSubwindow" in source
+    assert "MIC_ACTION_HOVER_COLLAPSE_MS = 260" in source
+    assert "wireMicSubwindowHoverBridge" in source
 
 
 def test_mic_device_subwindow_retries_permission_when_device_cache_is_empty():
