@@ -273,6 +273,78 @@ async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("snapshot_url", "auth_url", "social_url", "expected_url"),
+    [
+        (
+            "https://snapshot-auth.example/",
+            "https://auth-mirror.example",
+            "https://social-auth.example",
+            "https://snapshot-auth.example",
+        ),
+        (
+            "",
+            "https://auth-mirror.example/",
+            "https://social-auth.example",
+            "https://auth-mirror.example",
+        ),
+        (
+            "",
+            "",
+            "https://social-auth.example/",
+            "https://social-auth.example",
+        ),
+        ("", "", "", "https://current-auth.example"),
+    ],
+)
+async def test_oauth_logout_revokes_against_saved_issuer(
+    monkeypatch,
+    snapshot_url,
+    auth_url,
+    social_url,
+    expected_url,
+):
+    revoked: list[dict] = []
+
+    async def capture_revoke(**kwargs):
+        revoked.append(kwargs)
+
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(
+        O,
+        "_load_oauth_logout_records",
+        lambda: (
+            {
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "auth_public_url": snapshot_url,
+            },
+            {
+                "client_id": "desktop-client",
+                "auth_public_url": auth_url,
+            },
+            {"auth_public_url": social_url},
+        ),
+    )
+    monkeypatch.setattr(O, "_auth_public_url", lambda: "https://current-auth.example")
+    monkeypatch.setattr(O, "_revoke_tokens_best_effort", capture_revoke)
+    monkeypatch.setattr(O, "_unlink_pending", lambda: None)
+    monkeypatch.setattr(C, "_clear_auth", lambda: True)
+
+    result = await O.oauth_logout_endpoint(object())
+
+    assert result == {"ok": True}
+    assert revoked == [
+        {
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "client_id": "desktop-client",
+            "auth_public_url": expected_url,
+        }
+    ]
+
+
+@pytest.mark.unit
 def test_oauth_callback_rejects_bad_state(oauth_app):
     client, _auth, _social, pending = oauth_app
     start = client.post("/api/card-drop/oauth/start")

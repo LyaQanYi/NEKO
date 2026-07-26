@@ -560,11 +560,17 @@ async def oauth_logout_endpoint(request: Request):
         or str(social.get("client_id") or "").strip()
         or _desktop_client_id()
     )
+    auth_public_url = str(
+        snapshot.get("auth_public_url")
+        or auth.get("auth_public_url")
+        or social.get("auth_public_url")
+        or _auth_public_url()
+    ).strip().rstrip("/")
     await _revoke_tokens_best_effort(
         access_token=snapshot.get("access_token"),
         refresh_token=snapshot.get("refresh_token"),
         client_id=client_id,
-        auth_public_url=_auth_public_url(),
+        auth_public_url=auth_public_url,
     )
     await asyncio.to_thread(_unlink_pending)
     if not await asyncio.to_thread(C._clear_auth):
