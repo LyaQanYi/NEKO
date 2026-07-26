@@ -29,6 +29,7 @@ logger = logging.getLogger("neko.card_cache")
 SYNC_INTERVAL_SEC = 5 * 60
 HTTP_TIMEOUT_SEC = 15.0
 MAX_CARDS_PER_PULL = 100
+MAX_CACHED_CARDS = 500
 STARTUP_DELAY_SEC = 60.0
 
 
@@ -67,6 +68,33 @@ def _write_json_atomic(path: Path, data: Any) -> None:
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     tmp.replace(path)
+
+
+def load_cached_cards() -> list[dict[str, Any]]:
+    """Read cloud-card cache files for the local forge inventory."""
+    memory_dir = Path(get_config_manager().memory_dir)
+    try:
+        resolved_memory = memory_dir.resolve()
+    except OSError:
+        return []
+    records: list[tuple[float, dict[str, Any]]] = []
+    try:
+        candidates = memory_dir.glob("*/cards/*.json")
+        for path in candidates:
+            try:
+                resolved = path.resolve()
+                if resolved_memory not in resolved.parents or not resolved.is_file():
+                    continue
+                payload = json.loads(resolved.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict) or not isinstance(payload.get("id"), str):
+                    continue
+                records.append((resolved.stat().st_mtime, payload))
+            except (OSError, ValueError, TypeError):
+                continue
+    except OSError:
+        return []
+    records.sort(key=lambda item: item[0], reverse=True)
+    return [payload for _mtime, payload in records[:MAX_CACHED_CARDS]]
 
 
 async def _pull_once() -> int:

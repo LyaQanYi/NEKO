@@ -64,14 +64,23 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     listener = source[listener_start:listener_end]
 
     preopen = "popupRef = window.open('about:blank', '_blank');"
+    oauth_preopen = "oauthPopupRef = window.open('about:blank', '_blank');"
     assert preopen in listener
+    assert oauth_preopen in listener
     assert listener.index(preopen) < listener.index(
+        "const cfgRes = await fetch('/api/system/social/config');"
+    )
+    assert listener.index(oauth_preopen) < listener.index(
         "const cfgRes = await fetch('/api/system/social/config');"
     )
     assert "popupRef.opener = null;" in listener
     assert listener.index("popupRef.opener = null;") < listener.index("popupRef.location.replace(url);")
     assert "popupRef.location.replace(url);" in listener
+    assert "oauthPopupRef.opener = null;" in listener
+    assert "oauthPopupRef.location.replace(authUrl);" in listener
+    assert "window.open(authUrl, '_blank'" not in listener
     assert "closePopup();" in listener
+    assert "closeOauthPopup();" in listener
 
 
 @pytest.mark.unit

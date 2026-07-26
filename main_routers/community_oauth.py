@@ -151,6 +151,220 @@ def _load_oauth_status_records() -> tuple[dict | None, dict]:
     return C._desktop_session_snapshot(), C._load_auth() or {}
 
 
+def _status_snapshot_matches(current: dict | None, expected: dict) -> bool:
+    if current is None:
+        return False
+    return all(
+        current.get(field) == expected.get(field)
+        for field in ("base_url", "access_token", "refresh_token", "local_user_id")
+    )
+
+
+def _persist_refreshed_oauth_tokens(
+    expected: dict,
+    access_token: str,
+    refresh_token: str,
+) -> bool:
+    """CAS-update both local OAuth records without rolling back a newer session."""
+    social_path = C._social_session_path()
+    if social_path is None:
+        return False
+    try:
+        with C._social_session_lock(social_path):
+            social = C._read_json_dict(social_path)
+            current = C._desktop_session_snapshot()
+            if not social or not _status_snapshot_matches(current, expected):
+                return False
+            generation = int(social.get("session_generation") or 0) + 1
+            C._write_private_json(
+                social_path,
+                {
+                    **social,
+                    "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
+                    "token": access_token,
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "session_generation": generation,
+                },
+            )
+    except (OSError, TimeoutError, ValueError, TypeError) as exc:
+        logger.warning("community_oauth: refreshed social session save failed: %s", exc)
+        return False
+
+    auth_path = C._auth_path()
+    if auth_path is None:
+        return True
+    try:
+        auth = C._read_json_dict(auth_path)
+        if auth and str(auth.get("access_token") or "").strip() == str(
+            expected.get("access_token") or ""
+        ).strip():
+            C._write_private_json(
+                auth_path,
+                {
+                    **auth,
+                    "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "session_generation": int(auth.get("session_generation") or 0) + 1,
+                },
+            )
+    except (OSError, ValueError, TypeError) as exc:
+        # The Electron-visible social session is authoritative.  A stale legacy
+        # mirror must not make a successful refresh look logged out.
+        logger.warning("community_oauth: refreshed auth mirror save failed: %s", exc)
+    return True
+
+
+def _clear_rejected_oauth_snapshot(expected: dict) -> bool:
+    """Clear only the rejected credential snapshot; preserve a concurrent login."""
+    success = True
+    social_path = C._social_session_path()
+    if social_path is not None:
+        try:
+            with C._social_session_lock(social_path):
+                social = C._read_json_dict(social_path)
+                current_access = str((social or {}).get("token") or "").strip()
+                if current_access == str(expected.get("access_token") or "").strip():
+                    social_path.unlink(missing_ok=True)
+        except (OSError, TimeoutError):
+            success = False
+    auth_path = C._auth_path()
+    if auth_path is not None:
+        try:
+            auth = C._read_json_dict(auth_path)
+            if str((auth or {}).get("access_token") or "").strip() == str(
+                expected.get("access_token") or ""
+            ).strip():
+                auth_path.unlink(missing_ok=True)
+        except OSError:
+            success = False
+    return success
+
+
+async def _refresh_oauth_token(
+    *,
+    refresh_token: str,
+    client_id: str,
+    auth_public_url: str,
+) -> tuple[str, dict[str, Any] | None]:
+    """Return ``ok``, ``rejected``, or ``unavailable`` for a refresh grant."""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(_HTTP_TIMEOUT_SEC)) as client:
+            response = await client.post(
+                f"{auth_public_url.rstrip('/')}/oauth2/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": client_id,
+                },
+                headers={
+                    "accept": "application/json",
+                    "content-type": "application/x-www-form-urlencoded",
+                },
+            )
+    except httpx.HTTPError:
+        return "unavailable", None
+
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        payload = None
+    if response.status_code >= 500:
+        return "unavailable", None
+    if response.status_code >= 400:
+        return "rejected", payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or not str(payload.get("access_token") or "").strip():
+        return "unavailable", None
+    return "ok", payload
+
+
+async def resolve_saved_oauth_status(_attempt: int = 0) -> dict[str, Any]:
+    """Validate and, for expired OAuth credentials, refresh the saved session."""
+    snapshot, auth = await asyncio.to_thread(_load_oauth_status_records)
+    if not snapshot or not snapshot.get("access_token"):
+        return {"logged_in": False, "snapshot": None, "auth": auth}
+
+    lookup = await C._lookup_cloud_identity(
+        str(snapshot.get("base_url") or C._social_base_url()).rstrip("/"),
+        str(snapshot["access_token"]),
+    )
+    if lookup.identity is not None:
+        return {"logged_in": True, "snapshot": snapshot, "auth": auth}
+    if lookup.failure != "rejected":
+        # Do not erase a usable offline session on network/service failures, but
+        # also do not claim that an unvalidated bearer is currently logged in.
+        return {"logged_in": False, "snapshot": snapshot, "auth": auth}
+
+    refresh_token = str(snapshot.get("refresh_token") or "").strip()
+    auth_public_url = str(
+        snapshot.get("auth_public_url")
+        or auth.get("auth_public_url")
+        or _auth_public_url()
+    ).strip().rstrip("/")
+    client_id = str(
+        snapshot.get("client_id")
+        or auth.get("client_id")
+        or _desktop_client_id()
+    ).strip()
+    if (
+        snapshot.get("auth_source") == "oauth"
+        and refresh_token
+        and auth_public_url
+        and client_id
+    ):
+        outcome, payload = await _refresh_oauth_token(
+            refresh_token=refresh_token,
+            client_id=client_id,
+            auth_public_url=auth_public_url,
+        )
+        if outcome == "ok" and payload is not None:
+            access_token = str(payload.get("access_token") or "").strip()
+            rotated_refresh = str(payload.get("refresh_token") or "").strip() or refresh_token
+            saved = await asyncio.to_thread(
+                _persist_refreshed_oauth_tokens,
+                snapshot,
+                access_token,
+                rotated_refresh,
+            )
+            if saved:
+                refreshed_snapshot, refreshed_auth = await asyncio.to_thread(
+                    _load_oauth_status_records
+                )
+                refreshed_expected = {
+                    **snapshot,
+                    "access_token": access_token,
+                    "refresh_token": rotated_refresh,
+                }
+                if _status_snapshot_matches(refreshed_snapshot, refreshed_expected):
+                    return {
+                        "logged_in": True,
+                        "snapshot": refreshed_snapshot,
+                        "auth": refreshed_auth,
+                    }
+                if refreshed_snapshot and _attempt < 2:
+                    return await resolve_saved_oauth_status(_attempt + 1)
+                return {
+                    "logged_in": False,
+                    "snapshot": refreshed_snapshot,
+                    "auth": refreshed_auth,
+                }
+            # A concurrent account switch won the CAS. Resolve the winner.
+            current, current_auth = await asyncio.to_thread(_load_oauth_status_records)
+            if (
+                current
+                and not _status_snapshot_matches(current, snapshot)
+                and _attempt < 2
+            ):
+                return await resolve_saved_oauth_status(_attempt + 1)
+            return {"logged_in": False, "snapshot": current, "auth": current_auth}
+        if outcome == "unavailable":
+            return {"logged_in": False, "snapshot": snapshot, "auth": auth}
+
+    await asyncio.to_thread(_clear_rejected_oauth_snapshot, snapshot)
+    return {"logged_in": False, "snapshot": None, "auth": {}}
+
+
 def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
     """Read all logout inputs together on a worker thread."""
     return (
@@ -297,8 +511,10 @@ async def oauth_status_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
-    snapshot, auth = await asyncio.to_thread(_load_oauth_status_records)
-    if not snapshot or not snapshot.get("access_token"):
+    status = await resolve_saved_oauth_status()
+    snapshot = status["snapshot"]
+    auth = status["auth"]
+    if not status["logged_in"] or not snapshot:
         return {
             "logged_in": False,
             "auth_source": None,

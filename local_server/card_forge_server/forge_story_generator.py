@@ -64,8 +64,8 @@ def _forge_request_id(payload: dict[str, Any]) -> str:
 
 
 # 写入日志会暴露内容的字段：故事引子、模型 prompt 与 raw response、最终故事。
-# 这些字段都可能携带可识别的个人记忆，控制台日志只保留长度 + 短预览，
-# 不再打印全文。要看完整 prompt 请改用本地调试断点，不要走日志。
+# 这些字段都可能携带可识别的个人记忆，控制台日志只保留长度，
+# 不打印全文或预览。要看完整 prompt 请改用本地调试断点，不要走日志。
 _FORGE_SENSITIVE_FIELDS = frozenset({
     "storyLead",
     "lanlanPromptPreview",
@@ -74,17 +74,12 @@ _FORGE_SENSITIVE_FIELDS = frozenset({
     "rawContent",
     "story",
 })
-_FORGE_LOG_PREVIEW_CHARS = 40
-
-
 def _mask_sensitive_text(value: Any) -> str:
-    """敏感字段日志专用：只保留 `[40 字符预览]…(len=N)`，避免全文落地。"""
+    """敏感字段日志专用：只保留长度，避免任何个人记忆片段落地。"""
     text = str(value or "").strip()
     if not text:
         return ""
-    clipped = text[:_FORGE_LOG_PREVIEW_CHARS]
-    suffix = "…" if len(text) > _FORGE_LOG_PREVIEW_CHARS else ""
-    return f"{clipped}{suffix}(len={len(text)})"
+    return f"(len={len(text)})"
 
 
 def _log_value(value: Any, *, limit: int = 4000) -> Any:
@@ -106,8 +101,7 @@ def _forge_log(request_id: str, event: str, **fields: Any) -> None:
     """Emit forge diagnostics to the server console only.
 
     Sensitive fields (storyLead / system+user prompts / raw model output / final
-    story / persona summary) are masked to length+short-preview so logs no longer
-    leak the catgirl's individualized memory text.
+    story / persona summary) are reduced to length-only metadata.
     """
 
     payload = {

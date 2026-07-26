@@ -18,6 +18,10 @@ export default defineConfig({
         target: `http://localhost:${cardForgePort}`,
         changeOrigin: true,
       },
+      '/forge/cards': {
+        target: `http://localhost:${cardForgePort}`,
+        changeOrigin: true,
+      },
       '/forge/card-story': {
         target: `http://localhost:${cardForgePort}`,
         changeOrigin: true,

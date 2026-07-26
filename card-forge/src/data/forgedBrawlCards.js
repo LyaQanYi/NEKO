@@ -165,6 +165,45 @@ export function normalizeForgedBrawlCard(card) {
   }
 }
 
+function stableAttrId(value) {
+  const text = String(value || '')
+  let hash = 0
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash * 31) + text.charCodeAt(index)) >>> 0
+  }
+  return BRAWL_ATTRS[hash % BRAWL_ATTRS.length].id
+}
+
+export function normalizeCachedCloudCard(card) {
+  if (!card || typeof card !== 'object' || !card.id) return null
+  const payload = card.payload && typeof card.payload === 'object' ? card.payload : {}
+  const embedded = payload.card && typeof payload.card === 'object' ? payload.card : payload
+  const story = card.story_md || embedded.story || card.summary || embedded.summary || ''
+  const title = card.title || embedded.title || embedded.name || '云端铸造卡'
+  const normalized = normalizeForgedBrawlCard({
+    ...embedded,
+    id: card.id,
+    code: card.serial || embedded.code || card.id,
+    baseCode: embedded.baseCode || embedded.code,
+    name: title,
+    title,
+    story,
+    summary: card.summary || embedded.summary || story,
+    storyLead: embedded.storyLead || card.summary || story,
+    comboAttrId: embedded.comboAttrId || stableAttrId(card.id),
+    sourceCharacter: card.lanlan_name || embedded.sourceCharacter || null,
+    sourceKind: 'cloud-cache',
+    sourceEventName: embedded.sourceEventName || '云端铸造记录',
+    forgedAt: Number(embedded.forgedAt) || Date.parse(card.forged_at || card.created_at || '') || 0,
+    rarity: card.rarity || embedded.rarity,
+  })
+  return normalized ? {
+    ...normalized,
+    cloudCached: true,
+    coverUrl: card.cover_url || embedded.coverUrl || '',
+  } : null
+}
+
 export function loadForgedBrawlCards() {
   if (typeof window === 'undefined') return []
   try {

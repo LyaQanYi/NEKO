@@ -6,6 +6,7 @@ import {
   composeForgedCardStory,
   createForgedBrawlCard,
   loadForgedBrawlCards,
+  normalizeCachedCloudCard,
   saveForgedBrawlCards,
 } from './data/forgedBrawlCards'
 
@@ -226,6 +227,7 @@ async function createForgedCardWithLlmStory(event, character, options = {}) {
 export default function App() {
   const [activeCharacterName, setActiveCharacterName] = useState(null)
   const [forgedInventory, setForgedInventory] = useState(() => loadForgedBrawlCards())
+  const [cloudInventory, setCloudInventory] = useState([])
   const [inspectCard, setInspectCard] = useState(null)
 
   const [showForgeMachine, setShowForgeMachine] = useState(false)
@@ -243,6 +245,40 @@ export default function App() {
   useEffect(() => {
     saveForgedBrawlCards(forgedInventory)
   }, [forgedInventory])
+
+  useEffect(() => {
+    let cancelled = false
+    let timer = null
+    async function fetchCloudInventory() {
+      try {
+        const res = await fetch('/forge/cards', { cache: 'no-store' })
+        if (!res.ok) return
+        const data = await res.json()
+        const cards = Array.isArray(data.cards)
+          ? data.cards.map(normalizeCachedCloudCard).filter(Boolean)
+          : []
+        if (!cancelled) setCloudInventory(cards)
+      } catch {
+        // 本地缓存服务不可达时保留上一次结果；本地铸造仓库仍可独立使用。
+      }
+    }
+    void fetchCloudInventory()
+    timer = setInterval(fetchCloudInventory, 30_000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [])
+
+  const inventoryCards = useMemo(() => {
+    const localKeys = new Set(
+      forgedInventory.flatMap(card => [card.id, card.code].filter(Boolean))
+    )
+    const cloudOnly = cloudInventory.filter(card => (
+      !localKeys.has(card.id) && !localKeys.has(card.code)
+    ))
+    return [...forgedInventory, ...cloudOnly]
+  }, [forgedInventory, cloudInventory])
 
   // 从 NEKO 主服务同步当前猫娘名，作为 runtime_character_hint 提供给 /forge/facts。
   // 拿到空 name 时也要把本地 state 清掉，否则服务端缓存清空（例如重启）后前端仍会显示旧猫娘名。
@@ -283,7 +319,7 @@ export default function App() {
     // 的卡牌 (用户切换过猫娘),把它们一并 exclude 会让本猫娘的可用 fact 池被错误地缩水。
     // 没有 sourceCharacter 字段的旧卡 (历史 / 临时) 当作"属于任意猫娘",保留 exclude
     // 以维持向后兼容。
-    const inventoryForActiveCharacter = forgedInventory.filter(card => (
+    const inventoryForActiveCharacter = inventoryCards.filter(card => (
       !card.sourceCharacter || card.sourceCharacter === activeCharacterName
     ))
     const usedFactIds = inventoryForActiveCharacter.map(card => card.sourceFactId).filter(Boolean)
@@ -305,7 +341,7 @@ export default function App() {
         error: error?.message || 'fetch_failed',
       })
     }
-  }, [forgedInventory, activeCharacterName])
+  }, [inventoryCards, activeCharacterName])
 
   const applyForgeMachineLoad = useCallback(async () => {
     setForgeMachineLoading(true)
@@ -383,8 +419,8 @@ export default function App() {
   }, [])
 
   const inventorySorted = useMemo(
-    () => [...forgedInventory].sort((a, b) => (b.forgedAt || 0) - (a.forgedAt || 0)),
-    [forgedInventory],
+    () => [...inventoryCards].sort((a, b) => (b.forgedAt || 0) - (a.forgedAt || 0)),
+    [inventoryCards],
   )
 
   return (
@@ -475,14 +511,18 @@ export default function App() {
                   </p>
                   <div className="mt-3 flex items-center justify-between">
                     <span className="text-[10px] text-gray-500">行动力 {card.cost}</span>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); handleDeleteForgedCard(card) }}
-                      className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-gray-400 hover:border-rose-400/40 hover:bg-rose-500/10 hover:text-rose-200"
-                      title="删除"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
+                    {card.cloudCached ? (
+                      <span className="text-[10px] text-sky-300/70">云端缓存</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); handleDeleteForgedCard(card) }}
+                        className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-gray-400 hover:border-rose-400/40 hover:bg-rose-500/10 hover:text-rose-200"
+                        title="删除"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    )}
                   </div>
                 </motion.div>
               ))}

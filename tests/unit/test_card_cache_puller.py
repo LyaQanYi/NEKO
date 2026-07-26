@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import pytest
 
@@ -50,3 +51,23 @@ def test_get_client_id_fails_closed_when_fresh_default_cannot_be_saved(
     monkeypatch.setattr(puller, "get_config_manager", lambda: FakeConfigManager())
 
     assert puller._get_client_id() is None
+
+
+def test_load_cached_cards_returns_safe_newest_records(tmp_path, monkeypatch) -> None:
+    memory_dir = tmp_path / "memory"
+    cards_dir = memory_dir / "Lanlan" / "cards"
+    cards_dir.mkdir(parents=True)
+    (cards_dir / "card-1.json").write_text(
+        json.dumps({"id": "card-1", "title": "Cloud card"}),
+        encoding="utf-8",
+    )
+    (cards_dir / "invalid.json").write_text("[]", encoding="utf-8")
+
+    class FakeConfigManager:
+        pass
+
+    manager = FakeConfigManager()
+    manager.memory_dir = memory_dir
+    monkeypatch.setattr(puller, "get_config_manager", lambda: manager)
+
+    assert puller.load_cached_cards() == [{"id": "card-1", "title": "Cloud card"}]

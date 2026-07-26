@@ -112,12 +112,105 @@ async def test_oauth_status_offloads_session_reads(monkeypatch):
     monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
     monkeypatch.setattr(O, "_load_oauth_status_records", load_records)
 
+    async def lookup_identity(_base, _access):
+        return C._CloudIdentityLookup(
+            C._CloudIdentity(USER_ID, "oauth", {}),
+            200,
+        )
+
+    monkeypatch.setattr(C, "_lookup_cloud_identity", lookup_identity)
+
     event_loop_thread = threading.get_ident()
     result = await O.oauth_status_endpoint(object())
 
     assert result["logged_in"] is True
     assert worker_threads
     assert all(thread_id != event_loop_thread for thread_id in worker_threads)
+
+
+@pytest.mark.unit
+async def test_oauth_status_refreshes_rejected_access_token(monkeypatch):
+    old_snapshot = {
+        "base_url": "https://community.example",
+        "access_token": "expired-access",
+        "refresh_token": "refresh-token",
+        "local_user_id": USER_ID,
+        "auth_source": "oauth",
+        "auth_public_url": "https://auth.example",
+        "client_id": "desktop-client",
+    }
+    refreshed_snapshot = {
+        **old_snapshot,
+        "access_token": "fresh-access",
+        "refresh_token": "rotated-refresh",
+    }
+    reads = iter([
+        (old_snapshot, {"access_token": "expired-access"}),
+        (refreshed_snapshot, {"access_token": "fresh-access"}),
+    ])
+
+    async def rejected_identity(_base, _access):
+        return C._CloudIdentityLookup(None, 401, "rejected")
+
+    async def refresh_token(**kwargs):
+        assert kwargs == {
+            "refresh_token": "refresh-token",
+            "client_id": "desktop-client",
+            "auth_public_url": "https://auth.example",
+        }
+        return "ok", {
+            "access_token": "fresh-access",
+            "refresh_token": "rotated-refresh",
+        }
+
+    saved: list[tuple[dict, str, str]] = []
+
+    def persist(expected, access, refresh):
+        saved.append((expected, access, refresh))
+        return True
+
+    monkeypatch.setattr(O, "_load_oauth_status_records", lambda: next(reads))
+    monkeypatch.setattr(C, "_lookup_cloud_identity", rejected_identity)
+    monkeypatch.setattr(O, "_refresh_oauth_token", refresh_token)
+    monkeypatch.setattr(O, "_persist_refreshed_oauth_tokens", persist)
+
+    status = await O.resolve_saved_oauth_status()
+
+    assert status["logged_in"] is True
+    assert status["snapshot"]["access_token"] == "fresh-access"
+    assert saved == [(old_snapshot, "fresh-access", "rotated-refresh")]
+
+
+@pytest.mark.unit
+async def test_oauth_status_clears_only_rejected_unrefreshable_snapshot(monkeypatch):
+    snapshot = {
+        "base_url": "https://community.example",
+        "access_token": "expired-access",
+        "refresh_token": None,
+        "local_user_id": USER_ID,
+        "auth_source": "oauth",
+    }
+
+    async def rejected_identity(_base, _access):
+        return C._CloudIdentityLookup(None, 401, "rejected")
+
+    cleared: list[dict] = []
+    monkeypatch.setattr(
+        O,
+        "_load_oauth_status_records",
+        lambda: (snapshot, {"access_token": "expired-access"}),
+    )
+    monkeypatch.setattr(C, "_lookup_cloud_identity", rejected_identity)
+    monkeypatch.setattr(
+        O,
+        "_clear_rejected_oauth_snapshot",
+        lambda expected: cleared.append(expected) or True,
+    )
+
+    status = await O.resolve_saved_oauth_status()
+
+    assert status["logged_in"] is False
+    assert cleared == [snapshot]
 
 
 @pytest.mark.unit

@@ -210,6 +210,7 @@
             }
             const isElectron = !!(window.electronShell && typeof window.electronShell.openExternal === 'function');
             let popupRef = null;
+            let oauthPopupRef = null;
             const closePopup = () => {
                 if (!popupRef) {
                     return;
@@ -221,9 +222,22 @@
                 } catch (_) { /* ignore */ }
                 popupRef = null;
             };
+            const closeOauthPopup = () => {
+                if (!oauthPopupRef) {
+                    return;
+                }
+                try {
+                    if (!oauthPopupRef.closed) {
+                        oauthPopupRef.close();
+                    }
+                } catch (_) { /* ignore */ }
+                oauthPopupRef = null;
+            };
             try {
                 if (!isElectron) {
-                    // 这里必须先保留 WindowProxy，异步拿到配置/票据后才能导航预开的 tab。
+                    // 这里必须先保留两个 WindowProxy：一个用于社区，一个留给可能
+                    // 需要的 OAuth。两者都要发生在原始点击手势内，异步请求完成后
+                    // 再 window.open(authUrl) 会被多数浏览器当作弹窗拦截。
                     // Chromium 在 windowFeatures 里指定 noopener 时可能直接返回 null。
                     popupRef = window.open('about:blank', '_blank');
                     if (!popupRef) {
@@ -236,6 +250,7 @@
                         }
                         return;
                     }
+                    oauthPopupRef = window.open('about:blank', '_blank');
                 }
                 const cfgRes = await fetch('/api/system/social/config');
                 if (!cfgRes.ok) {
@@ -246,6 +261,7 @@
                         );
                     }
                     closePopup();
+                    closeOauthPopup();
                     return;
                 }
                 const cfg = await cfgRes.json();
@@ -257,12 +273,14 @@
                         );
                     }
                     closePopup();
+                    closeOauthPopup();
                     return;
                 }
                 let url = (cfg && cfg.social_base_url) ? cfg.social_base_url.replace(/\/+$/, '') + '/feed' : null;
                 if (!url) {
                     console.warn('[social] no social_base_url from /api/system/social/config');
                     closePopup();
+                    closeOauthPopup();
                     return;
                 }
                 const targetUrl = new URL(url, window.location.href);
@@ -337,8 +355,19 @@
                             if (authUrl) {
                                 if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
                                     await window.electronShell.openExternal(authUrl);
+                                } else if (oauthPopupRef) {
+                                    oauthPopupRef.opener = null;
+                                    oauthPopupRef.location.replace(authUrl);
+                                    try { oauthPopupRef.focus && oauthPopupRef.focus(); } catch (_) { /* ignore */ }
+                                    oauthPopupRef = null;
                                 } else {
-                                    window.open(authUrl, '_blank', 'noopener,noreferrer');
+                                    if (typeof window.showStatusToast === 'function') {
+                                        window.showStatusToast(
+                                            (window.t && window.t('app.socialOpenFailed', { error: 'OAuth popup blocked' }))
+                                                || '登录窗口打开失败：请允许弹窗后重试',
+                                            4000
+                                        );
+                                    }
                                 }
                                 if (typeof window.showStatusToast === 'function') {
                                     const oauthPromptKey = 'app.socialOAuthPrompt';
@@ -356,11 +385,16 @@
                         }
                     } catch (oauthErr) {
                         console.warn('[social] oauth/start failed (non-fatal):', oauthErr);
+                    } finally {
+                        closeOauthPopup();
                     }
+                } else {
+                    closeOauthPopup();
                 }
                 return;
             } catch (err) {
                 closePopup();
+                closeOauthPopup();
                 console.error('[social] open failed:', err);
                 if (typeof window.showStatusToast === 'function') {
                     window.showStatusToast(

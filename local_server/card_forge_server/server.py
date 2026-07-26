@@ -42,6 +42,7 @@ from main_logic.card_forge_facts import (  # noqa: E402
     build_forge_facts_payload,
     resolve_active_neko_context,
 )
+from main_logic.card_cache.puller import load_cached_cards  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 应用与 CORS
@@ -320,16 +321,13 @@ def _card_face_avatar_url(name: str) -> str:
 # storyLead 来源敏感(其余是 id/provider/model/elapsedMs 之类的元数据)。
 # 仍然单独维护一份,避免 server.py 反向依赖 generator 的内部实现细节。
 _FORGE_ROUTE_SENSITIVE_FIELDS = frozenset({"storyLead"})
-_FORGE_ROUTE_LOG_PREVIEW_CHARS = 40
 
 
 def _mask_route_sensitive(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    clipped = text[:_FORGE_ROUTE_LOG_PREVIEW_CHARS]
-    suffix = "…" if len(text) > _FORGE_ROUTE_LOG_PREVIEW_CHARS else ""
-    return f"{clipped}{suffix}(len={len(text)})"
+    return f"(len={len(text)})"
 
 
 def _forge_route_log(request_id: str, event: str, **fields: Any) -> None:
@@ -375,6 +373,13 @@ async def arena_forge_facts(
         exclude_hashes=exclude_hashes,
     )
     return JSONResponse(payload)
+
+
+@app.get("/forge/cards")
+async def arena_forge_cards():
+    """Expose the local cloud-card cache to the forge warehouse."""
+    cards = await asyncio.to_thread(load_cached_cards)
+    return JSONResponse({"cards": cards, "count": len(cards)})
 
 
 @app.post("/forge/card-story")

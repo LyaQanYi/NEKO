@@ -88,6 +88,16 @@ def test_frontend_timeout_covers_both_backend_story_targets():
 
 
 @pytest.mark.unit
+def test_sensitive_forge_logs_keep_only_length_metadata():
+    secret = "主人生日是七月二十六日"
+
+    masked = forge_story_generator._mask_sensitive_text(secret)
+
+    assert masked == f"(len={len(secret)})"
+    assert secret not in masked
+
+
+@pytest.mark.unit
 async def test_generate_story_rejects_stale_runtime_character_hint(monkeypatch):
     class _ConfigManager:
         pass

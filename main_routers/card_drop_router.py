@@ -420,6 +420,8 @@ def _desktop_session_snapshot() -> dict | None:
             ),
             "local_user_id": _normalize_local_user_id(social.get("local_user_id")),
             "auth_source": _normalize_auth_source(social.get("auth_source")),
+            "auth_public_url": str(social.get("auth_public_url") or "").strip().rstrip("/"),
+            "client_id": str(social.get("client_id") or "").strip(),
         }
 
     auth = _load_auth()
@@ -436,6 +438,8 @@ def _desktop_session_snapshot() -> dict | None:
         ),
         "local_user_id": _normalize_local_user_id(auth.get("local_user_id")),
         "auth_source": _normalize_auth_source(auth.get("auth_source")),
+        "auth_public_url": str(auth.get("auth_public_url") or "").strip().rstrip("/"),
+        "client_id": str(auth.get("client_id") or "").strip(),
     }
 
 
@@ -999,9 +1003,15 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
 
 @router.get("/auth-status", summary="社区登录状态")
 async def auth_status_endpoint():
-    a = await asyncio.to_thread(_load_auth) or {}
-    if await asyncio.to_thread(_access_token):
-        u = a.get("user") or {}
+    # Validate the bearer (and refresh OAuth sessions when necessary) before
+    # telling the UI that it is logged in.  Import lazily to keep the router
+    # modules' existing dependency direction intact.
+    from main_routers import community_oauth
+
+    status = await community_oauth.resolve_saved_oauth_status()
+    if status["logged_in"]:
+        a = status["auth"]
+        u = a.get("user") if isinstance(a.get("user"), dict) else {}
         # 老会话没存 bind 字段 → 视为已绑（向后兼容，正常单账号场景成立）
         bind = a.get("bind") or {"bound": True, "error": None}
         return {

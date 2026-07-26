@@ -447,6 +447,34 @@ def test_forge_active_character_endpoint_fails_closed_without_runtime_binding(mo
     assert response.json()["master_name"] == ""
 
 
+def test_forge_route_sensitive_log_mask_contains_no_memory_preview():
+    server = importlib.import_module("local_server.card_forge_server.server")
+    secret = "主人生日是七月二十六日"
+
+    masked = server._mask_route_sensitive(secret)
+
+    assert masked == f"(len={len(secret)})"
+    assert secret not in masked
+
+
+def test_forge_cards_endpoint_exposes_local_cloud_cache(monkeypatch):
+    server = importlib.import_module("local_server.card_forge_server.server")
+    monkeypatch.setattr(
+        server,
+        "load_cached_cards",
+        lambda: [{"id": "cloud-card-1", "title": "Cloud card"}],
+    )
+
+    with TestClient(server.app) as test_client:
+        response = test_client.get("/forge/cards")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "cards": [{"id": "cloud-card-1", "title": "Cloud card"}],
+        "count": 1,
+    }
+
+
 @pytest.mark.asyncio
 async def test_shared_facts_selector_filters_private_and_redacted_memory(
     tmp_path, monkeypatch
