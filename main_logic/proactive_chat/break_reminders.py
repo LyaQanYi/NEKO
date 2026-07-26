@@ -224,7 +224,7 @@ async def _deliver_break_reminder_via_llm(
     # crashing the whole proactive_chat round, and the source pending stays
     # armed for the next attempt once config is fixed.
     try:
-        correction_config = config_manager.get_model_api_config("correction")
+        correction_config = await config_manager.aget_model_api_config("correction")
         correction_model = correction_config.get("model")
         correction_base_url = correction_config.get("base_url")
         correction_api_key = correction_config.get("api_key")

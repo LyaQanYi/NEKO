@@ -1279,7 +1279,12 @@ async def handle_proactive_chat(
         # "第一行写来源标签" 的格式，容易把人设约束块当正文吐出来；conversation
         # 是主对话主力模型，格式遵循更稳。仍保持 disable_thinking（vision+思考必超时）。
         try:
-            conversation_config = _config_manager.get_model_api_config("conversation")
+            # 一份新鲜快照供 conversation / vision 共用：两次独立的读会让 /core_api
+            # 的保存恰好落在中间时拿到撕裂的一对（旧 conversation + 新 vision）。
+            _fresh_core_config = await _config_manager.aget_core_config()
+            conversation_config = await _config_manager.aget_model_api_config(
+                "conversation", core_config=_fresh_core_config
+            )
             conversation_model = conversation_config.get("model")
             conversation_api_key = conversation_config.get("api_key")
 
@@ -1297,7 +1302,9 @@ async def handle_proactive_chat(
                     )
                 )
 
-            vision_config = _config_manager.get_model_api_config("vision")
+            vision_config = await _config_manager.aget_model_api_config(
+                "vision", core_config=_fresh_core_config
+            )
             model_config = ProactiveModelConfig(
                 conversation_model=conversation_model,
                 conversation_base_url=conversation_config.get("base_url"),
