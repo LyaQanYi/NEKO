@@ -168,9 +168,9 @@ function buildForgeStoryRequest(card, event, character) {
   }
 }
 
-// 后端 FORGE_STORY_TIMEOUT_SECONDS=25，前端给一点宽裕：30 秒。
-// 超过时长用 AbortController 触发 abort，避免铸造动画无限转圈。
-const FORGE_STORY_FETCH_TIMEOUT_MS = 30_000
+// 后端会依次尝试 summary / agent 两个模型，每级最多 25 秒；额外预留
+// 5 秒给路由与响应解析，避免第二级有效结果被前端提前 abort。
+const FORGE_STORY_FETCH_TIMEOUT_MS = 55_000
 
 async function requestForgeCardStory(card, event, character) {
   if (!card?.storyLead && !event?.storyLead && !event?.factText && !event?.summary) return null

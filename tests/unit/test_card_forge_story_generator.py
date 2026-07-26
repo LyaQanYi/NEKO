@@ -1,8 +1,13 @@
+import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from local_server.card_forge_server import forge_story_generator
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class _FakeLLM:
@@ -64,6 +69,22 @@ async def test_generate_story_preserves_configured_provider_type(monkeypatch):
 
     assert result.model == "custom-claude"
     assert create_calls[0][3]["provider_type"] == "anthropic"
+
+
+@pytest.mark.unit
+def test_frontend_timeout_covers_both_backend_story_targets():
+    source = (PROJECT_ROOT / "card-forge" / "src" / "App.jsx").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(
+        r"const FORGE_STORY_FETCH_TIMEOUT_MS = ([\d_]+)",
+        source,
+    )
+
+    assert match is not None
+    frontend_timeout_ms = int(match.group(1).replace("_", ""))
+    backend_retry_window_ms = forge_story_generator.FORGE_STORY_TIMEOUT_SECONDS * 2 * 1000
+    assert frontend_timeout_ms >= backend_retry_window_ms + 5_000
 
 
 @pytest.mark.unit
