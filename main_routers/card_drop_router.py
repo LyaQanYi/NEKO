@@ -22,6 +22,7 @@ import os
 import secrets
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -37,6 +38,10 @@ router = APIRouter(prefix="/api/card-drop", tags=["card-drop"])
 _HTTP_TIMEOUT_SEC = 60.0
 _DEFAULT_SOCIAL_BASE_URL = "https://community.project-neko.cn"
 _SOCIAL_SESSION_FILENAME = "social_session.json"
+_SOCIAL_SESSION_LOCK_SUFFIX = ".lock"
+_SOCIAL_SESSION_LOCK_STALE_SEC = 30.0
+_SOCIAL_SESSION_LOCK_TIMEOUT_SEC = 2.0
+_SOCIAL_SESSION_LOCK_POLL_SEC = 0.02
 _SOCIAL_SESSION_SCHEMA_VERSION = 2
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _PLATFORM_TOKEN_SYNC_FORBIDDEN = "platform_token_native_sync_forbidden"
@@ -453,6 +458,59 @@ def _write_private_json(path: Path, data: dict) -> None:
             pass
 
 
+@contextmanager
+def _social_session_lock(path: Path):
+    """Serialize social-session CAS writes with the Electron main process."""
+    lock_path = Path(f"{path}{_SOCIAL_SESSION_LOCK_SUFFIX}")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    token = f"{os.getpid()}:{secrets.token_hex(16)}"
+    deadline = time.monotonic() + _SOCIAL_SESSION_LOCK_TIMEOUT_SEC
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            try:
+                stale = (
+                    time.time() - lock_path.stat().st_mtime
+                ) > _SOCIAL_SESSION_LOCK_STALE_SEC
+                if stale:
+                    lock_path.unlink(missing_ok=True)
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError("social session lock is busy")
+            time.sleep(_SOCIAL_SESSION_LOCK_POLL_SEC)
+            continue
+        try:
+            os.write(
+                fd,
+                json.dumps({"token": token, "created_at": time.time()}).encode("utf-8"),
+            )
+        except OSError:
+            os.close(fd)
+            lock_path.unlink(missing_ok=True)
+            raise
+        else:
+            os.close(fd)
+            break
+
+    try:
+        yield
+    finally:
+        try:
+            current = json.loads(lock_path.read_text(encoding="utf-8"))
+            if isinstance(current, dict) and current.get("token") == token:
+                lock_path.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+
+
+def _write_social_session_record(path: Path, data: dict) -> None:
+    with _social_session_lock(path):
+        _write_private_json(path, data)
+
+
 def _save_auth(data: dict) -> bool:
     p = _auth_path()
     if not p:
@@ -499,7 +557,7 @@ def _save_social_session(
     if oauth_client:
         data["client_id"] = oauth_client
     try:
-        _write_private_json(p, data)
+        _write_social_session_record(p, data)
     except OSError as exc:
         logger.warning("card_drop: save social session failed: %s", exc)
         return False
@@ -556,24 +614,29 @@ def _persist_session_identity_metadata(
     social_saved = False
     found_social_session = False
     for path in _social_session_paths():
-        data = _read_json_dict(path)
-        access = str((data or {}).get("token") or "").strip()
-        if not data or not access:
-            continue
-        found_social_session = True
-        base = str(data.get("baseUrl") or _social_base_url()).strip().rstrip("/")
-        refresh = str(data.get("refresh_token") or "").strip()
-        if (access, base, refresh) != (expected_access, expected_base, expected_refresh):
-            # The authoritative Electron session changed after validation.
-            return False
-        upgraded = {
-            **data,
-            "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
-            "local_user_id": normalized_user_id,
-            "auth_source": normalized_source,
-        }
         try:
-            _write_private_json(path, upgraded)
+            with _social_session_lock(path):
+                data = _read_json_dict(path)
+                access = str((data or {}).get("token") or "").strip()
+                if not data or not access:
+                    continue
+                found_social_session = True
+                base = str(data.get("baseUrl") or _social_base_url()).strip().rstrip("/")
+                refresh = str(data.get("refresh_token") or "").strip()
+                if (access, base, refresh) != (
+                    expected_access,
+                    expected_base,
+                    expected_refresh,
+                ):
+                    # The authoritative Electron session changed after validation.
+                    return False
+                upgraded = {
+                    **data,
+                    "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
+                    "local_user_id": normalized_user_id,
+                    "auth_source": normalized_source,
+                }
+                _write_private_json(path, upgraded)
         except OSError as exc:
             logger.warning("card_drop: save social identity metadata failed: %s", exc)
             return False
@@ -612,7 +675,11 @@ def _clear_auth() -> bool:
     success = auth_path is not None
     for path in paths:
         try:
-            path.unlink(missing_ok=True)
+            if path.name == _SOCIAL_SESSION_FILENAME:
+                with _social_session_lock(path):
+                    path.unlink(missing_ok=True)
+            else:
+                path.unlink(missing_ok=True)
         except OSError as exc:
             success = False
             logger.warning("card_drop: clear credential failed for %s: %s", path, exc)

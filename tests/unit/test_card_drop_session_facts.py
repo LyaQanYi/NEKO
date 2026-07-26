@@ -801,6 +801,48 @@ def test_access_token_prefers_authoritative_refreshed_social_session(tmp_path, m
     assert C._access_token() == "refreshed-desktop-token"
 
 
+def test_social_session_writer_respects_desktop_cross_process_lock(
+    tmp_path, monkeypatch,
+):
+    social = tmp_path / "social_session.json"
+    original = {
+        "schema_version": 2,
+        "baseUrl": "https://community.example",
+        "token": "desktop-refresh-in-flight",
+        "local_user_id": USER_A_ID,
+        "auth_source": "oauth",
+    }
+    social.write_text(json.dumps(original), encoding="utf-8")
+    lock_path = Path(f"{social}{C._SOCIAL_SESSION_LOCK_SUFFIX}")
+    lock_path.write_text(
+        json.dumps({"token": "desktop-owner", "created_at": 1}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_SOCIAL_SESSION_LOCK_TIMEOUT_SEC", 0)
+
+    assert not C._save_social_session(
+        "https://community.example",
+        "backend-login",
+        "backend-refresh",
+        local_user_id=USER_B_ID,
+        auth_source="oauth",
+    )
+    assert json.loads(social.read_text(encoding="utf-8")) == original
+    assert lock_path.exists()
+
+    lock_path.unlink()
+    assert C._save_social_session(
+        "https://community.example",
+        "backend-login",
+        "backend-refresh",
+        local_user_id=USER_B_ID,
+        auth_source="oauth",
+    )
+    assert json.loads(social.read_text(encoding="utf-8"))["token"] == "backend-login"
+    assert not lock_path.exists()
+
+
 def test_sync_session_clear_is_origin_restricted_and_private_network_aware(
     client, tmp_path, monkeypatch,
 ):

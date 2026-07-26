@@ -193,6 +193,12 @@ def _persist_oauth_credentials(
 
     rollback_ok = True
     for path, existed, payload in snapshots:
+        # _save_social_session() either atomically replaced the social file and
+        # returned True, or left it untouched. Reaching rollback therefore
+        # means only community_auth.json may need restoration; rewriting the
+        # social snapshot here could overwrite a concurrent Desktop refresh.
+        if path == social_path:
+            continue
         try:
             if existed:
                 C._write_private_json(path, payload or {})
