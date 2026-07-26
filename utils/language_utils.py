@@ -37,6 +37,7 @@ from typing import Optional, Tuple, List, Any, Dict, Iterator
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
+from utils.source_locale import source_region_from_locale
 from utils.token_tracker import set_call_type
 from utils.steam_state import get_steamworks
 
@@ -132,6 +133,14 @@ def is_supported_language_code(raw: Any) -> bool:
     return any(_matches_lang_code(s, code) for code in _SUPPORTED_LANGUAGE_CODES)
 
 
+def _locale_is_mainland_china(raw: Any) -> bool:
+    """Match a system locale against the shared mainland source-region contract."""
+    if not raw:
+        return False
+    normalized = str(raw).strip().split('@', 1)[0].split('.', 1)[0]
+    return source_region_from_locale(normalized) == 'china'
+
+
 def _is_china_region() -> bool:
     """
     Decide whether the current system is in the Chinese region
@@ -157,19 +166,19 @@ def _is_china_region() -> bool:
 
     try:
         macos_locale = _get_macos_locale()
-        if macos_locale and macos_locale.lower().replace('_', '-').startswith('zh'):
+        if _locale_is_mainland_china(macos_locale):
             return True
 
         system_locale = locale.getlocale()[0]
         if system_locale:
             system_locale_lower = system_locale.lower()
-            if system_locale_lower.startswith('zh'):
+            if _locale_is_mainland_china(system_locale_lower):
                 return True
             if 'chinese' in system_locale_lower and 'china' in system_locale_lower:
                 return True
         
         lang_env = os.environ.get('LANG', '').lower()
-        if lang_env.startswith('zh'):
+        if _locale_is_mainland_china(lang_env):
             return True
         
         return False
