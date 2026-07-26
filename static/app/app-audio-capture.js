@@ -352,6 +352,7 @@
             }
         });
 
+        shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });
         shareToggleButtonRegistry.push(button);
         // 每次重新显示（弹窗重渲染）时，若共享处于开启状态则重播一次开启动画；未开启则直接落位
         button._nekoSetShareActive(isScreenShareActive(), !isScreenShareActive());

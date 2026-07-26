@@ -359,6 +359,10 @@ def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
     # 启用动画：像素扫过填充（参考视频按钮的像素动画）
     assert "neko-share-toggle-fill" in toggle_factory
     assert "isScreenShareActive()" in toggle_factory
+    cleanup = "shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });"
+    register = "shareToggleButtonRegistry.push(button);"
+    assert cleanup in toggle_factory
+    assert toggle_factory.index(cleanup) < toggle_factory.index(register)
 
     # 合并为一行：迷你胶囊开关嵌在「屏幕共享」设置行右侧（替换 chevron）
     render_start = source.index("window.renderFloatingMicList = async function")
