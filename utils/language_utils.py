@@ -31,7 +31,9 @@ import hashlib
 import platform
 import subprocess
 from collections import OrderedDict
-from typing import Optional, Tuple, List, Any, Dict
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Optional, Tuple, List, Any, Dict, Iterator
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
@@ -52,6 +54,18 @@ _global_language_initialized = False
 
 # 全局区域标识（中文区/非中文区）
 _global_region: Optional[str] = None  # 'china' 或 'non-china'
+
+# Background work may carry a conversation-specific locale while other
+# conversations run concurrently. ContextVars keep that override task-local;
+# process-wide language remains the fallback for ordinary callers.
+_language_context_short: ContextVar[Optional[str]] = ContextVar(
+    "neko_language_context_short",
+    default=None,
+)
+_language_context_full: ContextVar[Optional[str]] = ContextVar(
+    "neko_language_context_full",
+    default=None,
+)
 
 
 def _get_language_env_override() -> Optional[str]:
@@ -390,6 +404,10 @@ def get_global_language() -> str:
     Returns:
         Language code ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'), defaults to 'zh'
     """
+    contextual = _language_context_short.get()
+    if contextual:
+        return contextual
+
     global _global_language
     
     with _global_language_lock:
@@ -409,11 +427,36 @@ def get_global_language_full() -> str:
     Returns:
         Language code ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru'), defaults to 'zh'
     """
+    contextual = _language_context_full.get()
+    if contextual:
+        return contextual
+
     with _global_language_lock:
         if not _global_language_initialized:
             initialize_global_language()
         
         return _global_language_full or _global_language or 'en'
+
+
+@contextmanager
+def language_context(language: Any) -> Iterator[None]:
+    """Temporarily override language getters within the current async task."""
+    selected = _get_language_env_override() or language
+    if not is_supported_language_code(selected):
+        yield
+        return
+
+    short_token = _language_context_short.set(
+        normalize_language_code(str(selected), format='short')
+    )
+    full_token = _language_context_full.set(
+        normalize_language_code(str(selected), format='full')
+    )
+    try:
+        yield
+    finally:
+        _language_context_full.reset(full_token)
+        _language_context_short.reset(short_token)
 
 
 def set_global_language(language: str) -> None:

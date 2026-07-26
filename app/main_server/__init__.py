@@ -508,6 +508,7 @@ _main_runtime_limited_mode_enabled = False
 _main_runtime_limited_mode_reason = ""
 _MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS = {
     "/",
+    "/card-forge/active-character",
     "/health",
     "/favicon.ico",
     "/api/beacon/shutdown",
@@ -707,6 +708,24 @@ def _start_neko_servers_integration_workers() -> None:
             _card_cache_worker_task = asyncio.create_task(start_card_cache_puller())
         except Exception as exc:
             logger.debug("[card_cache] start puller failed: %s", exc)
+
+
+async def _stop_neko_servers_integration_workers() -> None:
+    """Cancel storage-backed integration workers during graceful shutdown."""
+    global _facts_sync_worker_task, _card_cache_worker_task
+
+    await _cancel_task_if_running(
+        _facts_sync_worker_task,
+        name="facts sync worker",
+        timeout=1.0,
+    )
+    _facts_sync_worker_task = None
+    await _cancel_task_if_running(
+        _card_cache_worker_task,
+        name="card cache worker",
+        timeout=1.0,
+    )
+    _card_cache_worker_task = None
 
 
 async def _cancel_task_if_running(
@@ -1128,6 +1147,7 @@ async def on_shutdown():
             _game_cleanup_task, name="game cleanup", timeout=1.0
         )
         _game_cleanup_task = None
+        await _stop_neko_servers_integration_workers()
 
         # Clean up agent_event_bridge (ZMQ context/sockets/recv thread)
         if agent_event_bridge is not None:

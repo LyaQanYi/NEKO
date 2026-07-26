@@ -20,6 +20,7 @@ handler at import time.
 """
 
 import asyncio
+from functools import wraps
 
 from config import (
     IGNORED_REINFORCEMENT_DELTA,
@@ -36,6 +37,19 @@ from memory.outbox import OP_POST_TURN_SIGNALS
 from . import gates, outbox_infra, runtime, signal_extraction
 from ._shared import logger
 from .rows import _extract_ai_response, _extract_user_messages
+
+
+def _with_language_context(func):
+    """Run one post-turn operation with its persisted task-local locale."""
+
+    @wraps(func)
+    async def wrapped(*args, language: str | None = None, **kwargs):
+        from utils.language_utils import language_context
+
+        with language_context(language):
+            return await func(*args, language=language, **kwargs)
+
+    return wrapped
 
 
 async def _spawn_outbox_post_turn_signals(
@@ -74,6 +88,7 @@ async def _spawn_outbox_post_turn_signals(
     return runtime._spawn_background_task(outbox_infra._run_outbox_op(lanlan_name, op))
 
 
+@_with_language_context
 async def _run_post_turn_signals(
     messages: list,
     lanlan_name: str,
@@ -104,12 +119,6 @@ async def _run_post_turn_signals(
     semantics. The **string value** of ``OP_POST_TURN_SIGNALS`` remains
     ``"extract_facts"`` (the outbox.ndjson wire format is immutable).
     """
-    if language:
-        from utils.language_utils import is_supported_language_code, refresh_global_language
-
-        if is_supported_language_code(language):
-            refresh_global_language(language)
-
     user_msgs = _extract_user_messages(messages)
 
     # 本轮算入 signal-extraction 触发计数器（RFC §3.4.3）—— batch loop

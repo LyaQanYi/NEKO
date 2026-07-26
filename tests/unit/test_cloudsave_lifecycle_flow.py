@@ -583,6 +583,41 @@ async def test_release_storage_startup_barrier_starts_integration_workers_after_
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stop_integration_workers_cancels_both_background_tasks():
+    from app import main_server
+
+    async def wait_forever():
+        await asyncio.Event().wait()
+
+    facts_task = asyncio.create_task(wait_forever())
+    card_task = asyncio.create_task(wait_forever())
+    await asyncio.sleep(0)
+
+    with (
+        patch.object(main_server, "_facts_sync_worker_task", facts_task),
+        patch.object(main_server, "_card_cache_worker_task", card_task),
+    ):
+        await main_server._stop_neko_servers_integration_workers()
+        assert main_server._facts_sync_worker_task is None
+        assert main_server._card_cache_worker_task is None
+
+    assert facts_task.cancelled()
+    assert card_task.cancelled()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["GET", "POST", "OPTIONS"])
+def test_card_forge_active_character_is_allowed_during_limited_mode(method):
+    from app import main_server
+
+    assert main_server._is_main_limited_mode_allowed_path(
+        "/card-forge/active-character",
+        method,
+    )
+
+
+@pytest.mark.unit
 def test_main_server_limited_mode_middleware_blocks_runtime_routes():
     from app import main_server
 
@@ -594,6 +629,7 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
             blocked_response = client.get("/api/config/page_config")
             health_response = client.get("/health")
             steam_language_response = client.get("/api/config/steam_language")
+            active_character_response = client.get("/card-forge/active-character")
 
     assert blocked_response.status_code == 409
     payload = blocked_response.json()
@@ -603,6 +639,7 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
     assert health_response.status_code == 200
     assert steam_language_response.status_code == 200
     assert "uiLanguage" in steam_language_response.json()
+    assert active_character_response.status_code == 200
 
 
 @pytest.mark.unit

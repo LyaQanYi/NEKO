@@ -97,6 +97,57 @@ async def test_post_turn_outbox_replay_restores_recorded_language():
 
 
 @pytest.mark.asyncio
+async def test_concurrent_post_turn_tasks_keep_their_recorded_language():
+    """Per-conversation locales must not overwrite one another while awaiting."""
+    from app import memory_server
+    from utils.language_utils import get_global_language_full
+
+    baseline = get_global_language_full()
+    both_entered = asyncio.Event()
+    observed: dict[str, list[str]] = {}
+
+    async def extract_facts(_messages, lanlan_name):
+        observed[lanlan_name] = [get_global_language_full()]
+        if len(observed) == 2:
+            both_entered.set()
+        await both_entered.wait()
+        await asyncio.sleep(0)
+        observed[lanlan_name].append(get_global_language_full())
+
+    fact_store = MagicMock()
+    fact_store.extract_facts = extract_facts
+    reflection_engine = MagicMock()
+    reflection_engine.aload_surfaced = AsyncMock(return_value=[])
+
+    with (
+        patch.object(memory_server.post_turn, "_extract_user_messages", return_value=["hi"]),
+        patch.object(memory_server.post_turn, "_extract_ai_response", return_value=""),
+        patch.object(
+            memory_server.gates,
+            "_ais_powerful_memory_enabled",
+            AsyncMock(return_value=False),
+        ),
+        patch.object(
+            memory_server.signal_extraction,
+            "_signal_check_record_turn",
+            MagicMock(),
+        ),
+        patch.object(memory_server.runtime, "fact_store", fact_store),
+        patch.object(memory_server.runtime, "reflection_engine", reflection_engine),
+    ):
+        await asyncio.gather(
+            memory_server._run_post_turn_signals([], "繁中", language="zh-TW"),
+            memory_server._run_post_turn_signals([], "日本語", language="ja"),
+        )
+
+    assert observed == {
+        "繁中": ["zh-TW", "zh-TW"],
+        "日本語": ["ja", "ja"],
+    }
+    assert get_global_language_full() == baseline
+
+
+@pytest.mark.asyncio
 async def test_handler_failure_keeps_op_pending(tmp_path):
     """Handler raises → op stays pending (next startup replays it)."""
     ob, _ = _install_fresh_memory_state(str(tmp_path))

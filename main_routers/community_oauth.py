@@ -146,6 +146,26 @@ def _unlink_pending() -> None:
         logger.debug("community_oauth: pending unlink failed: %s", exc)
 
 
+def _load_oauth_status_records() -> tuple[dict | None, dict]:
+    """Read the status snapshot together on a worker thread."""
+    return C._desktop_session_snapshot(), C._load_auth() or {}
+
+
+def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
+    """Read all logout inputs together on a worker thread."""
+    return (
+        C._desktop_session_snapshot() or {},
+        C._load_auth() or {},
+        C._load_social_session() or {},
+    )
+
+
+def _load_oauth_pending() -> tuple[Path | None, dict | None]:
+    """Resolve and read the pending OAuth record on a worker thread."""
+    path = _oauth_pending_path()
+    return path, C._read_json_dict(path) if path else None
+
+
 def _persist_oauth_credentials(
     auth_payload: dict[str, Any],
     *,
@@ -231,12 +251,13 @@ async def oauth_start_endpoint(request: Request):
     code_challenge = _pkce_s256_challenge(code_verifier)
     expires_at = time.time() + _OAUTH_PENDING_TTL_SEC
     redirect_uri = _oauth_redirect_uri(request)
-    pending_path = _oauth_pending_path()
+    pending_path = await asyncio.to_thread(_oauth_pending_path)
     if pending_path is None:
         raise HTTPException(status_code=503, detail="oauth_pending_unavailable")
 
     try:
-        C._write_private_json(
+        await asyncio.to_thread(
+            C._write_private_json,
             pending_path,
             {
                 "state": state,
@@ -276,8 +297,7 @@ async def oauth_status_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
-    snapshot = C._desktop_session_snapshot()
-    auth = C._load_auth() or {}
+    snapshot, auth = await asyncio.to_thread(_load_oauth_status_records)
     if not snapshot or not snapshot.get("access_token"):
         return {
             "logged_in": False,
@@ -302,11 +322,10 @@ async def oauth_logout_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
 
-    snapshot = C._desktop_session_snapshot() or {}
-    auth = C._load_auth() or {}
+    snapshot, auth, social = await asyncio.to_thread(_load_oauth_logout_records)
     client_id = (
         str(auth.get("client_id") or "").strip()
-        or str((C._load_social_session() or {}).get("client_id") or "").strip()
+        or str(social.get("client_id") or "").strip()
         or _desktop_client_id()
     )
     await _revoke_tokens_best_effort(
@@ -315,8 +334,8 @@ async def oauth_logout_endpoint(request: Request):
         client_id=client_id,
         auth_public_url=_auth_public_url(),
     )
-    _unlink_pending()
-    if not C._clear_auth():
+    await asyncio.to_thread(_unlink_pending)
+    if not await asyncio.to_thread(C._clear_auth):
         raise HTTPException(status_code=500, detail="local_clear_failed")
     return {"ok": True}
 
@@ -326,8 +345,7 @@ async def _handle_oauth_callback(
     state: str | None,
     error: str | None = None,
 ) -> HTMLResponse:
-    pending_path = _oauth_pending_path()
-    pending = C._read_json_dict(pending_path) if pending_path else None
+    _pending_path, pending = await asyncio.to_thread(_load_oauth_pending)
     if not pending:
         return _callback_html(
             "登录尚未开始",
@@ -340,7 +358,7 @@ async def _handle_oauth_callback(
     except (TypeError, ValueError):
         expires_at = 0.0
     if time.time() > expires_at:
-        _unlink_pending()
+        await asyncio.to_thread(_unlink_pending)
         return _callback_html(
             "登录已过期",
             "请回到 NEKO 重新点击社区登录。",
@@ -356,7 +374,7 @@ async def _handle_oauth_callback(
         )
 
     if error:
-        _unlink_pending()
+        await asyncio.to_thread(_unlink_pending)
         if error == "access_denied":
             return _callback_html(
                 "登录已取消",
@@ -370,7 +388,7 @@ async def _handle_oauth_callback(
         )
 
     if not code:
-        _unlink_pending()
+        await asyncio.to_thread(_unlink_pending)
         return _callback_html(
             "登录未完成",
             "Auth 未返回授权码，请回到 NEKO 重试。",
@@ -382,7 +400,7 @@ async def _handle_oauth_callback(
     client_id = str(pending.get("client_id") or _desktop_client_id())
     auth_public_url = str(pending.get("auth_public_url") or _auth_public_url()).rstrip("/")
     if not code_verifier:
-        _unlink_pending()
+        await asyncio.to_thread(_unlink_pending)
         return _callback_html(
             "登录数据不完整",
             "请回到 NEKO 重新点击社区登录。",
@@ -398,14 +416,14 @@ async def _handle_oauth_callback(
             auth_public_url=auth_public_url,
         )
     except HTTPException as exc:
-        _unlink_pending()
+        await asyncio.to_thread(_unlink_pending)
         detail = str(exc.detail) if exc.detail else "换取登录凭证失败"
         return _callback_html("登录失败", detail, status_code=400)
 
     access_token = str(token_payload.get("access_token") or "").strip()
     refresh_token = str(token_payload.get("refresh_token") or "").strip() or None
     if not access_token:
-        _unlink_pending()
+        await asyncio.to_thread(_unlink_pending)
         return _callback_html(
             "登录失败",
             "Auth 未返回有效 access token。",
@@ -416,14 +434,14 @@ async def _handle_oauth_callback(
     try:
         bootstrap = await _bootstrap_session(social_base, access_token)
     except HTTPException as exc:
-        _unlink_pending()
+        await asyncio.to_thread(_unlink_pending)
         detail = str(exc.detail) if exc.detail else "无法建立社区会话"
         return _callback_html("登录失败", detail, status_code=400)
 
     user = bootstrap.get("user") if isinstance(bootstrap.get("user"), dict) else {}
     local_user_id = C._normalize_local_user_id(user.get("id"))
     if not local_user_id:
-        _unlink_pending()
+        await asyncio.to_thread(_unlink_pending)
         return _callback_html(
             "登录失败",
             "社区身份响应无效。",
@@ -432,7 +450,7 @@ async def _handle_oauth_callback(
 
     bind = await _oauth_guest_bind(social_base, access_token)
     if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-        _unlink_pending()
+        await asyncio.to_thread(_unlink_pending)
         return _callback_html(
             "登录冲突",
             "这台设备已经绑定其他社区账号，本次登录未生效；原登录状态保持不变。",
@@ -464,7 +482,7 @@ async def _handle_oauth_callback(
         auth_public_url=auth_public_url,
         client_id=client_id,
     )
-    _unlink_pending()
+    await asyncio.to_thread(_unlink_pending)
     if not credentials_saved:
         return _callback_html(
             "登录未完成",
@@ -573,7 +591,7 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
     but do not abort the login.
     """
     bind: dict[str, Any] = {"bound": False, "error": None}
-    credentials = C._get_client_credentials()
+    credentials = await asyncio.to_thread(C._get_client_credentials)
     if not credentials:
         bind["error"] = "client_not_registered"
         return bind

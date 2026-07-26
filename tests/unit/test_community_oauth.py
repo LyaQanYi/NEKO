@@ -7,6 +7,7 @@ import hashlib
 import json
 import threading
 import time
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -71,6 +72,84 @@ def test_oauth_start_returns_desktop_pkce_auth_url(oauth_app):
     assert redirect_uri.endswith("/oauth/callback")
     assert "neko-desktop" not in body["auth_url"]
     assert "/market/oauth/callback" not in body["auth_url"]
+
+
+@pytest.mark.unit
+async def test_oauth_start_offloads_pending_write(tmp_path, monkeypatch):
+    pending = tmp_path / "community_oauth_pending.json"
+    worker_threads: list[int] = []
+
+    def write_pending(path, payload):
+        worker_threads.append(threading.get_ident())
+        assert path == pending
+        assert payload["state"]
+
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(O, "_oauth_pending_path", lambda: pending)
+    monkeypatch.setattr(C, "_write_private_json", write_pending)
+
+    event_loop_thread = threading.get_ident()
+    result = await O.oauth_start_endpoint(
+        SimpleNamespace(url=SimpleNamespace(port=48911))
+    )
+
+    assert result["auth_url"]
+    assert worker_threads
+    assert all(thread_id != event_loop_thread for thread_id in worker_threads)
+
+
+@pytest.mark.unit
+async def test_oauth_status_offloads_session_reads(monkeypatch):
+    worker_threads: list[int] = []
+
+    def load_records():
+        worker_threads.append(threading.get_ident())
+        return (
+            {"access_token": "access", "auth_source": "oauth"},
+            {"user": {"display_name": "User", "email": "user@example.com"}},
+        )
+
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(O, "_load_oauth_status_records", load_records)
+
+    event_loop_thread = threading.get_ident()
+    result = await O.oauth_status_endpoint(object())
+
+    assert result["logged_in"] is True
+    assert worker_threads
+    assert all(thread_id != event_loop_thread for thread_id in worker_threads)
+
+
+@pytest.mark.unit
+async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
+    worker_threads: list[int] = []
+
+    def record(value):
+        def operation(*_args, **_kwargs):
+            worker_threads.append(threading.get_ident())
+            return value
+
+        return operation
+
+    async def no_revoke(**_kwargs):
+        return None
+
+    monkeypatch.setattr(C, "_local_request_source_allowed", lambda _request: True)
+    monkeypatch.setattr(
+        O,
+        "_load_oauth_logout_records",
+        record(({"access_token": "access"}, {}, {})),
+    )
+    monkeypatch.setattr(O, "_revoke_tokens_best_effort", no_revoke)
+    monkeypatch.setattr(O, "_unlink_pending", record(None))
+    monkeypatch.setattr(C, "_clear_auth", record(True))
+
+    event_loop_thread = threading.get_ident()
+    result = await O.oauth_logout_endpoint(object())
+
+    assert result == {"ok": True}
+    assert len(worker_threads) == 3
+    assert all(thread_id != event_loop_thread for thread_id in worker_threads)
 
 
 @pytest.mark.unit
@@ -242,7 +321,6 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(O, "_oauth_pending_path", lambda: pending)
     monkeypatch.setattr(C, "_social_base_url", lambda: "https://community.example")
 
     async def fake_exchange(**_kwargs):
@@ -256,6 +334,14 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
 
     worker_threads = []
 
+    def load_pending():
+        worker_threads.append(threading.get_ident())
+        return pending, json.loads(pending.read_text(encoding="utf-8"))
+
+    def unlink_pending():
+        worker_threads.append(threading.get_ident())
+        pending.unlink(missing_ok=True)
+
     def save_auth(_payload):
         worker_threads.append(threading.get_ident())
         return True
@@ -267,6 +353,8 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(O, "_exchange_oauth_code", fake_exchange)
     monkeypatch.setattr(O, "_bootstrap_session", fake_bootstrap)
     monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
+    monkeypatch.setattr(O, "_load_oauth_pending", load_pending)
+    monkeypatch.setattr(O, "_unlink_pending", unlink_pending)
     monkeypatch.setattr(C, "_save_auth", save_auth)
     monkeypatch.setattr(C, "_save_social_session", save_social)
 
@@ -274,7 +362,7 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
     response = await O._handle_oauth_callback("auth-code", "expected-state")
 
     assert response.status_code == 200
-    assert len(worker_threads) == 2
+    assert len(worker_threads) == 4
     assert all(thread_id != event_loop_thread for thread_id in worker_threads)
 
 
@@ -375,12 +463,21 @@ async def test_oauth_guest_bind_treats_malformed_challenge_as_best_effort(
             assert url.endswith("/api/auth/bind-client/challenge")
             return _FakeResponse()
 
-    monkeypatch.setattr(O.httpx, "AsyncClient", _FakeAsyncClient)
-    monkeypatch.setattr(C, "_get_client_credentials", lambda: ("local-client", "local-proof"))
+    worker_threads: list[int] = []
 
+    def load_client_credentials():
+        worker_threads.append(threading.get_ident())
+        return "local-client", "local-proof"
+
+    monkeypatch.setattr(O.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(C, "_get_client_credentials", load_client_credentials)
+
+    event_loop_thread = threading.get_ident()
     bind = await O._oauth_guest_bind("https://community.example", "platform-access")
 
     assert bind == {"bound": False, "error": "invalid_client_binding_challenge"}
+    assert worker_threads
+    assert all(thread_id != event_loop_thread for thread_id in worker_threads)
 
 
 @pytest.mark.unit
