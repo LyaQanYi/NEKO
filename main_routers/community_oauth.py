@@ -361,8 +361,24 @@ async def resolve_saved_oauth_status(_attempt: int = 0) -> dict[str, Any]:
         if outcome == "unavailable":
             return {"logged_in": False, "snapshot": snapshot, "auth": auth}
 
-    await asyncio.to_thread(_clear_rejected_oauth_snapshot, snapshot)
-    return {"logged_in": False, "snapshot": None, "auth": {}}
+    cleared = await asyncio.to_thread(_clear_rejected_oauth_snapshot, snapshot)
+    if cleared:
+        return {"logged_in": False, "snapshot": None, "auth": {}}
+
+    logger.warning("community_oauth: rejected credential cleanup did not complete")
+    current, current_auth = await asyncio.to_thread(_load_oauth_status_records)
+    if (
+        current
+        and not _status_snapshot_matches(current, snapshot)
+        and _attempt < 2
+    ):
+        # A concurrent login replaced the rejected snapshot while cleanup ran.
+        return await resolve_saved_oauth_status(_attempt + 1)
+    return {
+        "logged_in": False,
+        "snapshot": current or snapshot,
+        "auth": current_auth or auth,
+    }
 
 
 def _load_oauth_logout_records() -> tuple[dict, dict, dict]:

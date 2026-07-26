@@ -126,6 +126,7 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
     // 创建按钮
     buttonConfigs.forEach(config => {
+        if (config.mobileOnly && !(window.isMobileWidth && window.isMobileWidth())) return;
         if (window.isMobileWidth && window.isMobileWidth() && (config.id === 'agent' || config.id === 'goodbye')) return;
 
         const { btnWrapper, btn, imgOff, imgOn } = this.createButtonElement(config, buttonsContainer);

@@ -1,6 +1,40 @@
 ﻿$ErrorActionPreference = "Continue"
 
-$ports = @(48911, 3001, 5173)
+function ConvertTo-ValidPort {
+  param([object]$Value)
+  $parsed = 0
+  if ([int]::TryParse([string]$Value, [ref]$parsed) -and $parsed -ge 1 -and $parsed -le 65535) {
+    return $parsed
+  }
+  return $null
+}
+
+function Get-DesktopMainServerPort {
+  foreach ($value in @($env:NEKO_MAIN_SERVER_PORT, $env:MAIN_SERVER_PORT)) {
+    $port = ConvertTo-ValidPort -Value $value
+    if ($null -ne $port) { return $port }
+  }
+
+  $appDataRoot = if ($env:APPDATA) {
+    $env:APPDATA
+  } else {
+    Join-Path $HOME "AppData\Roaming"
+  }
+  $configPath = Join-Path $appDataRoot "N.E.K.O\port_config.json"
+  try {
+    $config = Get-Content -LiteralPath $configPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    $port = ConvertTo-ValidPort -Value $config.MAIN_SERVER_PORT
+    if ($null -ne $port) { return $port }
+  } catch {
+    # Missing/malformed desktop config falls back to the source default.
+  }
+  return 48911
+}
+
+$mainServerPort = Get-DesktopMainServerPort
+$cardForgePort = ConvertTo-ValidPort -Value $env:NEKO_CARD_FORGE_PORT
+if ($null -eq $cardForgePort) { $cardForgePort = 3001 }
+$ports = @($mainServerPort, $cardForgePort, 5173) | Select-Object -Unique
 $windowTitles = @(
   "N.E.K.O Main Server - 48911",
   "Neko Card Forge Server - 3001",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -149,3 +150,48 @@ async def test_post_facts_batch_accepts_empty_success_response(
 
     assert ok is True
     assert payload is None
+
+
+@pytest.mark.asyncio
+async def test_failed_facts_remain_retryable_after_diagnostic_threshold(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    lanlan_dir = tmp_path / "memory" / "Lanlan"
+    lanlan_dir.mkdir(parents=True)
+    (lanlan_dir / "facts.json").write_text(
+        json.dumps(
+            [{"hash": "retry-hash-12345678", "text": "private memory", "importance": 8}]
+        ),
+        encoding="utf-8",
+    )
+
+    async def fail_batch(*_args, **_kwargs):
+        return False, None
+
+    monkeypatch.setattr(sync_worker, "MAX_FAILED_ATTEMPTS", 2)
+    monkeypatch.setattr(sync_worker, "_post_facts_batch", fail_batch)
+
+    for _attempt in range(3):
+        await sync_worker._sync_one_lanlan(
+            tmp_path / "memory",
+            lanlan_dir,
+            "client-id",
+            "https://community.example",
+        )
+
+    state = json.loads(
+        (lanlan_dir / "facts_sync_state.json").read_text(encoding="utf-8")
+    )
+    assert state["synced"] == []
+    assert state["failed_counts"] == {"retry-hash-12345678": 2}
+
+    pending_lines = (
+        lanlan_dir / "facts_sync_pending.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(pending_lines) == 1
+    diagnostic = json.loads(pending_lines[0])
+    assert diagnostic["fact_hash"] == "retry-hash-12345678"
+    assert diagnostic["attempts"] == 2
+    assert "text_preview" not in diagnostic
+    assert "private memory" not in pending_lines[0]

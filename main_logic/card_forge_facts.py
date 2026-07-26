@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -547,7 +548,7 @@ async def build_forge_facts_payload(
         if path is None:
             error = "facts_source_not_configured"
         else:
-            raw = _load_facts_json(path)
+            raw = await asyncio.to_thread(_load_facts_json, path)
             if not raw and error is None:
                 error = "facts_file_empty_or_missing"
 
@@ -557,11 +558,12 @@ async def build_forge_facts_payload(
         else None
     )
     if archive_path is not None:
-        raw_archive = _load_facts_json(archive_path)
+        raw_archive = await asyncio.to_thread(_load_facts_json, archive_path)
 
     excluded_ids = _parse_csv_set(exclude_fact_ids)
     excluded_hashes = _parse_csv_set(exclude_hashes)
-    facts, stats = _select_forge_facts_with_stats(
+    facts, stats = await asyncio.to_thread(
+        _select_forge_facts_with_stats,
         raw,
         min_importance=min_importance,
         include_absorbed=include_absorbed,
@@ -579,7 +581,8 @@ async def build_forge_facts_payload(
         active_hashes = {
             str(item.get("hash") or "") for item in facts if item.get("hash")
         }
-        archive_fact, archive_stats = _select_archive_distant_fact(
+        archive_fact, archive_stats = await asyncio.to_thread(
+            _select_archive_distant_fact,
             raw_archive,
             min_importance=min_importance,
             include_absorbed=include_absorbed,

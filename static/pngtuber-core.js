@@ -3930,6 +3930,7 @@
 
             const buttonConfigs = this._buttonConfigs;
             buttonConfigs.forEach((config) => {
+                if (config.mobileOnly && !(window.isMobileWidth && window.isMobileWidth())) return;
                 if (window.isMobileWidth && window.isMobileWidth() && (config.id === 'agent' || config.id === 'goodbye')) return;
                 const { btnWrapper, btn, imgOff, imgOn } = this.createButtonElement(config, buttonsContainer);
 
@@ -3954,6 +3955,8 @@
                     } else if (config.id === 'goodbye') {
                         this._isInReturnState = true;
                         window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+                    } else if (config.id === 'social') {
+                        window.dispatchEvent(new CustomEvent('live2d-social-click'));
                     }
                 });
 

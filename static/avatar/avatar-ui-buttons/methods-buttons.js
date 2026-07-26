@@ -15,6 +15,18 @@ Object.assign(AvatarButtonMixin.methods, {
                     iconOn: `/static/icons/mic_icon_on.png${iconVersion}`
                 },
                 {
+                    // 手机布局不渲染麦克风设置 trigger，因此保留一个可直接触发
+                    // 屏幕分享的入口；桌面仍通过语音设置里的开关控制。
+                    id: 'screen',
+                    title: window.t ? window.t('buttons.screenShare') : '屏幕分享',
+                    titleKey: 'buttons.screenShare',
+                    hasPopup: false,
+                    toggle: true,
+                    mobileOnly: true,
+                    iconOff: `/static/icons/screen_icon_off.png${iconVersion}`,
+                    iconOn: `/static/icons/screen_icon_on.png${iconVersion}`
+                },
+                {
                     id: 'agent',
                     emoji: '🔨',
                     title: window.t ? window.t('buttons.agentTools') : 'Agent工具',
@@ -26,8 +38,7 @@ Object.assign(AvatarButtonMixin.methods, {
                     iconOn: `/static/icons/Agent_on.png${iconVersion}`
                 },
                 {
-                    // N.E.K.O.Servers 社交平台入口（替代原 screen 槽位）。
-                    // 屏幕分享不再暴露独立按钮，改为跟随语音控制按钮启停。
+                    // N.E.K.O.Servers 社交平台入口（替代桌面 screen 槽位）。
                     id: 'social',
                     title: window.t ? window.t('buttons.social') : '猫娘社区',
                     titleKey: 'buttons.social',

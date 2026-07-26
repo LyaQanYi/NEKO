@@ -214,6 +214,33 @@ async def test_oauth_status_clears_only_rejected_unrefreshable_snapshot(monkeypa
 
 
 @pytest.mark.unit
+async def test_oauth_status_reports_rejected_snapshot_when_cleanup_fails(monkeypatch):
+    snapshot = {
+        "base_url": "https://community.example",
+        "access_token": "expired-access",
+        "refresh_token": None,
+        "local_user_id": USER_ID,
+        "auth_source": "oauth",
+    }
+    auth = {"access_token": "expired-access"}
+
+    async def rejected_identity(_base, _access):
+        return C._CloudIdentityLookup(None, 401, "rejected")
+
+    monkeypatch.setattr(O, "_load_oauth_status_records", lambda: (snapshot, auth))
+    monkeypatch.setattr(C, "_lookup_cloud_identity", rejected_identity)
+    monkeypatch.setattr(O, "_clear_rejected_oauth_snapshot", lambda _expected: False)
+
+    status = await O.resolve_saved_oauth_status()
+
+    assert status == {
+        "logged_in": False,
+        "snapshot": snapshot,
+        "auth": auth,
+    }
+
+
+@pytest.mark.unit
 async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
     worker_threads: list[int] = []
 

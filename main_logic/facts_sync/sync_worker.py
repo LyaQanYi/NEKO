@@ -269,22 +269,27 @@ async def _sync_one_lanlan(
                 synced_set.add(f["fact_hash"])
                 failed_counts.pop(f["fact_hash"], None)
         else:
-            # 累加失败次数，到上限的扔 pending.jsonl 让人查
+            # Keep failed facts eligible for the next sweep.  The pending file
+            # is diagnostic only; it must never turn a failed upload into a
+            # "synced" fact.
             for f in batch:
                 h = f["fact_hash"]
-                failed_counts[h] = failed_counts.get(h, 0) + 1
-                if failed_counts[h] >= MAX_FAILED_ATTEMPTS:
+                previous_attempts = failed_counts.get(h, 0)
+                attempts = min(previous_attempts + 1, MAX_FAILED_ATTEMPTS)
+                failed_counts[h] = attempts
+                if (
+                    attempts == MAX_FAILED_ATTEMPTS
+                    and previous_attempts < MAX_FAILED_ATTEMPTS
+                ):
                     await asyncio.to_thread(
                         _append_jsonl,
                         pending_path,
                         {
                             "fact_hash": h,
-                            "text_preview": f["text"][:80],
+                            "attempts": attempts,
                             "failed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                         },
                     )
-                    failed_counts.pop(h, None)
-                    synced_set.add(h)  # 标记为"放弃同步"避免无限重试
 
     state["synced"] = sorted(synced_set)
     state["failed_counts"] = failed_counts

@@ -144,6 +144,9 @@ VRMManager.prototype.setupFloatingButtons = function() {
 
     // 创建按钮
     buttonConfigs.forEach(config => {
+        if (config.mobileOnly && !window.isMobileWidth()) {
+            return;
+        }
         if (window.isMobileWidth() && (config.id === 'agent' || config.id === 'goodbye')) {
             return;
         }

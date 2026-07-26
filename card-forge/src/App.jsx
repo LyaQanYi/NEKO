@@ -249,7 +249,9 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     let timer = null
+    let requestVersion = 0
     async function fetchCloudInventory() {
+      const version = ++requestVersion
       try {
         const res = await fetch('/forge/cards', { cache: 'no-store' })
         if (!res.ok) return
@@ -257,7 +259,7 @@ export default function App() {
         const cards = Array.isArray(data.cards)
           ? data.cards.map(normalizeCachedCloudCard).filter(Boolean)
           : []
-        if (!cancelled) setCloudInventory(cards)
+        if (!cancelled && version === requestVersion) setCloudInventory(cards)
       } catch {
         // 本地缓存服务不可达时保留上一次结果；本地铸造仓库仍可独立使用。
       }
@@ -266,6 +268,7 @@ export default function App() {
     timer = setInterval(fetchCloudInventory, 30_000)
     return () => {
       cancelled = true
+      requestVersion += 1
       clearInterval(timer)
     }
   }, [])
@@ -284,23 +287,32 @@ export default function App() {
   // 拿到空 name 时也要把本地 state 清掉，否则服务端缓存清空（例如重启）后前端仍会显示旧猫娘名。
   useEffect(() => {
     let timer = null
+    let cancelled = false
+    let requestVersion = 0
     async function fetchActiveCharacter() {
+      const version = ++requestVersion
       try {
         const res = await fetch('/card-forge/active-character')
+        if (cancelled || version !== requestVersion) return
         if (!res.ok) {
           setActiveCharacterName(null)
           return
         }
         const { name } = await res.json()
+        if (cancelled || version !== requestVersion) return
         setActiveCharacterName(name ? name : null)
       } catch {
         // 主服务不可达或响应无效时 fail closed，避免继续携带旧 runtime hint。
-        setActiveCharacterName(null)
+        if (!cancelled && version === requestVersion) setActiveCharacterName(null)
       }
     }
     fetchActiveCharacter()
     timer = setInterval(fetchActiveCharacter, 5000)
-    return () => clearInterval(timer)
+    return () => {
+      cancelled = true
+      requestVersion += 1
+      clearInterval(timer)
+    }
   }, [])
 
   const loadForgeMachineSlots = useCallback(async () => {
@@ -380,30 +392,37 @@ export default function App() {
       const pickedSlot = forgeMachineSlots.find(s => s.id === slotId)
       if (!pickedSlot || hasForgedRef.current) return
       hasForgedRef.current = true
-      setMachinePhase('burning')
-      await sleep(900)
-      setMachinePhase('floating')
-      await sleep(800)
-      setMachineStoryStatus('正在根据原始引子生成卡牌故事…')
-      setMachinePhase('storyGenerating')
-      const rarity = rollForgeRarity()
-      const [forgedCard] = await Promise.all([
-        createForgedCardWithLlmStory(pickedSlot, pickedSlot.sourceCharacter || activeCharacterName || ''),
-        sleep(1400),
-      ])
-      const storedCard = {
-        ...forgedCard,
-        attribute: forgedCard.attrName,
-        rarity: rarity.name,
-        rarityStyle: rarity.tagStyle,
-        rarityFrame: rarity.frame,
+      try {
+        setMachinePhase('burning')
+        await sleep(900)
+        setMachinePhase('floating')
+        await sleep(800)
+        setMachineStoryStatus('正在根据原始引子生成卡牌故事…')
+        setMachinePhase('storyGenerating')
+        const rarity = rollForgeRarity()
+        const [forgedCard] = await Promise.all([
+          createForgedCardWithLlmStory(pickedSlot, pickedSlot.sourceCharacter || activeCharacterName || ''),
+          sleep(1400),
+        ])
+        const storedCard = {
+          ...forgedCard,
+          attribute: forgedCard.attrName,
+          rarity: rarity.name,
+          rarityStyle: rarity.tagStyle,
+          rarityFrame: rarity.frame,
+        }
+        setMachineStoryStatus('故事已写入卡面，准备完成铸造…')
+        setMachineForgedCard(storedCard)
+        setForgedInventory(prev => [...prev, storedCard])
+        setMachinePhase('flipping')
+        await sleep(650)
+        setMachinePhase('revealed')
+      } catch {
+        hasForgedRef.current = false
+        setMachineForgedCard(null)
+        setMachineStoryStatus('铸造未完成，请再次点击所选卡片重试。')
+        setMachinePhase('confirming')
       }
-      setMachineStoryStatus('故事已写入卡面，准备完成铸造…')
-      setMachineForgedCard(storedCard)
-      setForgedInventory(prev => [...prev, storedCard])
-      setMachinePhase('flipping')
-      await sleep(650)
-      setMachinePhase('revealed')
     } else if (machinePhase === 'confirming') {
       setMachinePickedId(slotId)
       setMachineStoryStatus('')
@@ -490,6 +509,18 @@ export default function App() {
                   layout
                   whileHover={{ scale: 1.02 }}
                   onClick={() => setInspectCard(card)}
+                  onKeyDown={(event) => {
+                    if (
+                      event.target === event.currentTarget
+                      && (event.key === 'Enter' || event.key === ' ')
+                    ) {
+                      event.preventDefault()
+                      setInspectCard(card)
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`查看铸造卡：${card.name}`}
                   className={`relative cursor-pointer rounded-2xl border bg-slate-950/60 p-4 shadow-lg transition-colors hover:border-violet-400/60 ${card.rarityFrame || 'border-white/10'}`}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -748,6 +779,19 @@ export default function App() {
                           layout
                           exit={{ opacity: 0 }}
                           onClick={() => handleMachineCardClick(slot.id)}
+                          onKeyDown={(event) => {
+                            if (
+                              event.target === event.currentTarget
+                              && (event.key === 'Enter' || event.key === ' ')
+                            ) {
+                              event.preventDefault()
+                              void handleMachineCardClick(slot.id)
+                            }
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`选择铸造记忆：${slot.name}`}
+                          aria-pressed={isPicked}
                           className={`forge-card-wrapper relative flex-1 rounded-2xl border p-3 flex flex-col items-center min-h-[340px] cursor-pointer transition-all duration-200 ${
                             isPicked && machinePhase === 'confirming'
                               ? 'border-violet-400/60 bg-violet-500/10 ring-2 ring-violet-400/30'

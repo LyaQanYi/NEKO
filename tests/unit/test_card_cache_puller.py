@@ -71,3 +71,55 @@ def test_load_cached_cards_returns_safe_newest_records(tmp_path, monkeypatch) ->
     monkeypatch.setattr(puller, "get_config_manager", lambda: manager)
 
     assert puller.load_cached_cards() == [{"id": "card-1", "title": "Cloud card"}]
+
+
+@pytest.mark.asyncio
+async def test_pull_skips_invalid_path_components_without_aborting_batch(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    memory_dir = tmp_path / "memory"
+
+    class FakeConfigManager:
+        pass
+
+    manager = FakeConfigManager()
+    manager.memory_dir = memory_dir
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return [
+                {"id": "bad-1", "lanlan_name": ""},
+                {"id": "bad-2", "lanlan_name": "."},
+                {"id": "bad\u0000", "lanlan_name": "Lanlan"},
+                {"id": "good-card", "lanlan_name": "Lanlan", "title": "Good"},
+            ]
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def get(self, _url, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(puller, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(puller, "_get_client_id", lambda: "client-id")
+    monkeypatch.setattr(puller, "get_config_manager", lambda: manager)
+    monkeypatch.setattr(puller.httpx, "AsyncClient", FakeAsyncClient)
+
+    assert await puller._pull_once() == 1
+    assert json.loads(
+        (memory_dir / "Lanlan" / "cards" / "good-card.json").read_text(
+            encoding="utf-8"
+        )
+    )["title"] == "Good"

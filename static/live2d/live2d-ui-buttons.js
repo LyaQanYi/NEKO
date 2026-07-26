@@ -396,6 +396,9 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     // 创建按钮
     buttonConfigs.forEach(config => {
+        if (config.mobileOnly && !isMobileWidth()) {
+            return;
+        }
         if (isMobileWidth() && (config.id === 'agent' || config.id === 'goodbye')) {
             return;
         }
@@ -423,7 +426,19 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                 }
             }
 
-            // 旧 screen 按钮已被 social 取代；屏幕分享跟随语音控制按钮启停。
+            if (config.id === 'screen') {
+                const isRecording = window.isRecording || false;
+                const wantToActivate = btn.dataset.active !== 'true';
+                if (wantToActivate && !isRecording) {
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(
+                            window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话',
+                            3000
+                        );
+                    }
+                    return;
+                }
+            }
 
             if (config.popupToggle) {
                 return;

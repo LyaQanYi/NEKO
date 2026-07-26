@@ -513,6 +513,76 @@ async def test_shared_facts_selector_filters_private_and_redacted_memory(
 
 
 @pytest.mark.asyncio
+async def test_shared_facts_file_parsing_and_selection_run_off_event_loop(
+    tmp_path,
+    monkeypatch,
+):
+    facts_path = tmp_path / "facts.json"
+    archive_path = tmp_path / "facts_archive.json"
+    facts_path.write_text(
+        json.dumps([{"id": "active", "text": "safe", "importance": 8}]),
+        encoding="utf-8",
+    )
+    archive_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "archive",
+                    "text": "old",
+                    "importance": 8,
+                    "created_at": "2020-01-01T00:00:00Z",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    async def fake_context(*_args, **_kwargs):
+        return ActiveNekoContext(
+            master_name="Master",
+            lanlan_name="Lanlan",
+            memory_dir=tmp_path,
+            facts_path=facts_path,
+            source="test",
+        )
+
+    event_loop_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    original_load = F._load_facts_json
+    original_select = F._select_forge_facts_with_stats
+    original_archive_select = F._select_archive_distant_fact
+
+    def tracked_load(path):
+        worker_threads.append(threading.get_ident())
+        return original_load(path)
+
+    def tracked_select(*args, **kwargs):
+        worker_threads.append(threading.get_ident())
+        return original_select(*args, **kwargs)
+
+    def tracked_archive_select(*args, **kwargs):
+        worker_threads.append(threading.get_ident())
+        return original_archive_select(*args, **kwargs)
+
+    monkeypatch.setattr(F, "resolve_active_neko_context", fake_context)
+    monkeypatch.setattr(F, "_load_facts_json", tracked_load)
+    monkeypatch.setattr(F, "_select_forge_facts_with_stats", tracked_select)
+    monkeypatch.setattr(F, "_select_archive_distant_fact", tracked_archive_select)
+
+    payload = await F.build_forge_facts_payload(
+        runtime_character_hint="Lanlan",
+        min_importance=0,
+        limit=5,
+    )
+
+    assert payload["returnedCount"] == 2
+    # The archive selector delegates to the shared selector, so the exact
+    # count includes that nested call as well as both file reads.
+    assert len(worker_threads) >= 4
+    assert all(thread_id != event_loop_thread for thread_id in worker_threads)
+
+
+@pytest.mark.asyncio
 async def test_shared_facts_selector_rejects_mismatched_runtime_character(
     tmp_path, monkeypatch
 ):
