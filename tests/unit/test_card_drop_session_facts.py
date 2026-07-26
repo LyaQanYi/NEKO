@@ -20,6 +20,18 @@ USER_A_ID = "11111111-1111-4111-8111-111111111111"
 USER_B_ID = "22222222-2222-4222-8222-222222222222"
 
 
+@pytest.mark.parametrize(
+    "malformed_origin",
+    [
+        "http://localhost:notaport",
+        "http://localhost:65536",
+        "http://[::1",
+    ],
+)
+def test_same_originish_rejects_malformed_ports(malformed_origin):
+    assert C._same_originish(malformed_origin, "http://localhost:48911") is False
+
+
 def _main_server_request(*, method: str = "POST", origin: str = "") -> Request:
     headers = [(b"host", b"127.0.0.1:48911")]
     if origin:

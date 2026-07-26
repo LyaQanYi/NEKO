@@ -187,12 +187,14 @@ def _same_originish(a: str, b: str) -> bool:
     try:
         pa = urlparse(a)
         pb = urlparse(b)
+        pa_port = _origin_port(pa)
+        pb_port = _origin_port(pb)
+        ha = (pa.hostname or "").lower()
+        hb = (pb.hostname or "").lower()
     except Exception:  # noqa: BLE001
         return False
-    if pa.scheme != pb.scheme or _origin_port(pa) != _origin_port(pb):
+    if pa.scheme != pb.scheme or pa_port != pb_port:
         return False
-    ha = (pa.hostname or "").lower()
-    hb = (pb.hostname or "").lower()
     if ha == hb:
         return True
     return ha in _LOOPBACK_HOSTS and hb in _LOOPBACK_HOSTS
