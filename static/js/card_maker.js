@@ -196,6 +196,19 @@
 
     // ====== 事件绑定 ======
     function bindEvents() {
+        if (isEmbedMode) {
+            let embedResizeFrame = null;
+            window.addEventListener('resize', () => {
+                if (embedResizeFrame !== null) {
+                    cancelAnimationFrame(embedResizeFrame);
+                }
+                embedResizeFrame = requestAnimationFrame(() => {
+                    embedResizeFrame = null;
+                    syncEmbedModelViewport();
+                });
+            });
+        }
+
         // 构图滑块（实时预览由循环驱动，滑块仅更新参数）
         offsetXInput.addEventListener('input', () => {
             composition.offsetX = clamp(Number(offsetXInput.value), MODEL_OFFSET_X_MIN, MODEL_OFFSET_X_MAX);
@@ -877,6 +890,13 @@
         }
         mgr.effect?.setSize?.(w, h);
         if (isEmbedMode) frameThreeModelForEmbed(mgr);
+    }
+
+    function syncEmbedModelViewport() {
+        if (!isEmbedMode || !isModelLoaded || !currentModelType) return;
+        prepareHiddenModelViewport();
+        resizeModelRendererForCard(currentModelType, activeModelSourceScale);
+        ensureRender();
     }
 
     function getZoomFactor(compositionOverride = composition) {

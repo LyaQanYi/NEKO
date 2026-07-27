@@ -78,7 +78,7 @@ def _expire(data: dict, now: datetime) -> bool:
     changed = False
     for credit in data["credits"]:
         expires = _parse(credit.get("expires_at"))
-        if credit.get("status") in {"active", "reserved"} and (expires is None or expires <= now):
+        if credit.get("status") == "active" and (expires is None or expires <= now):
             credit["status"] = "expired"
             credit["expired_at"] = _iso(now)
             changed = True
@@ -254,6 +254,10 @@ def release_credit(
             raise RuntimeError("reservation_not_active")
         for key in ("operation_id", "reserved_at"):
             credit.pop(key, None)
-        credit["status"] = "active"
+        expires = _parse(credit.get("expires_at"))
+        if expires is None or expires <= current:
+            credit.update({"status": "expired", "expired_at": _iso(current)})
+        else:
+            credit["status"] = "active"
         _save(data)
         return {"released": True, "credit": _public_credit(credit)}

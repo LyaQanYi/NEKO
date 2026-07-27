@@ -58,35 +58,53 @@ def test_release_and_expiry() -> None:
     assert ledger.list_credits(now + timedelta(minutes=2))["count"] == 0
 
 
-@pytest.mark.parametrize("transition", ["commit", "release"])
-def test_expired_reservation_cannot_transition_back_to_active_or_consumed(
-    transition: str,
-) -> None:
+def test_reserved_credit_can_commit_after_credit_deadline() -> None:
     now = datetime(2026, 7, 13, 23, 59, tzinfo=UTC)
     ledger.grant_credit(
-        {"trigger_type": "idle", "idem_key": f"expired-{transition}-idem"},
+        {"trigger_type": "idle", "idem_key": "late-commit-idem"},
         now=now,
         rarity="N",
     )
     credit_id = ledger.list_credits(now)["credits"][0]["id"]
     operation_id = "33333333-3333-4333-8333-333333333334"
     ledger.reserve_credit(credit_id, operation_id, now=now)
-    expired_at = now + timedelta(minutes=2)
+    committed_at = now + timedelta(minutes=2)
+    card_id = "44444444-4444-4444-8444-444444444444"
 
-    with pytest.raises(RuntimeError, match="reservation_not_active"):
-        if transition == "commit":
-            ledger.commit_credit(
-                credit_id,
-                operation_id,
-                "44444444-4444-4444-8444-444444444444",
-                now=expired_at,
-            )
-        else:
-            ledger.release_credit(credit_id, operation_id, now=expired_at)
+    snapshot = ledger.list_credits(committed_at)
+    assert snapshot["count"] == 0
+    assert len(snapshot["reservations"]) == 1
+    assert ledger.commit_credit(
+        credit_id, operation_id, card_id, now=committed_at
+    )["committed"]
+    persisted = ledger._load()["credits"][0]
+    assert persisted["status"] == "consumed"
+    assert persisted["card_id"] == card_id
 
+
+def test_releasing_reservation_after_credit_deadline_expires_credit() -> None:
+    now = datetime(2026, 7, 13, 23, 59, tzinfo=UTC)
+    ledger.grant_credit(
+        {"trigger_type": "idle", "idem_key": "late-release-idem"},
+        now=now,
+        rarity="N",
+    )
+    credit_id = ledger.list_credits(now)["credits"][0]["id"]
+    operation_id = "33333333-3333-4333-8333-333333333335"
+    ledger.reserve_credit(credit_id, operation_id, now=now)
+    released_at = now + timedelta(minutes=2)
+
+    released = ledger.release_credit(credit_id, operation_id, now=released_at)
+
+    assert released["credit"]["status"] == "expired"
+    assert ledger.list_credits(released_at) == {
+        "count": 0,
+        "credits": [],
+        "reservations": [],
+    }
     persisted = ledger._load()["credits"][0]
     assert persisted["status"] == "expired"
-    assert persisted["expired_at"] == ledger._iso(expired_at)
+    assert persisted["expired_at"] == ledger._iso(released_at)
 
 
 def test_daily_and_trigger_caps() -> None:

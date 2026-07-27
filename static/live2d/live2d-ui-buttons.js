@@ -371,6 +371,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     // 响应式布局处理
     const applyResponsiveFloatingLayout = () => {
+        this.syncResponsiveButtonVisibility(buttonsContainer);
         if (isMobileWidth()) {
             buttonsContainer.style.flexDirection = 'column';
             buttonsContainer.style.top = '16px';
@@ -396,9 +397,6 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     // 创建按钮
     buttonConfigs.forEach(config => {
-        if (config.mobileOnly && !isMobileWidth()) {
-            return;
-        }
         if (isMobileWidth() && (config.id === 'agent' || config.id === 'goodbye')) {
             return;
         }
@@ -687,6 +685,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         };
         console.log(`[Live2D] 按钮已创建: ${config.id}, hasPopup: ${config.hasPopup}, toggle: ${config.toggle}`);
     });
+    applyResponsiveFloatingLayout();
 
     console.log('[Live2D] 所有浮动按钮已创建完成');
 

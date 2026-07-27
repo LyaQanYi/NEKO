@@ -36,3 +36,6 @@ def test_card_maker_exposes_transparent_model_embed_mode() -> None:
     assert "frameThreeModelForEmbed(mmdProxy);" in script
     assert "framePNGTuberForEmbed(mgr);" in script
     assert "isEmbedMode ? Math.max(1, window.innerWidth) : CARD_BASE_WIDTH" in script
+    assert "window.addEventListener('resize'" in script
+    assert "function syncEmbedModelViewport()" in script
+    assert "resizeModelRendererForCard(currentModelType, activeModelSourceScale);" in script

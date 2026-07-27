@@ -79,6 +79,9 @@ Object.assign(AvatarButtonMixin.methods, {
 
             // 创建包装器
             const btnWrapper = document.createElement('div');
+            if (config.mobileOnly) {
+                btnWrapper.dataset.mobileOnly = 'true';
+            }
             Object.assign(btnWrapper.style, {
                 position: 'relative',
                 display: 'flex',
@@ -231,6 +234,15 @@ Object.assign(AvatarButtonMixin.methods, {
             });
 
             return { btnWrapper, btn, imgOff, imgOn };
+        };
+
+        ManagerPrototype.syncResponsiveButtonVisibility = function(buttonsContainer) {
+            const isMobile = typeof window.isMobileWidth === 'function'
+                ? window.isMobileWidth()
+                : window.innerWidth <= 768;
+            buttonsContainer.querySelectorAll('[data-mobile-only="true"]').forEach((wrapper) => {
+                wrapper.style.display = isMobile ? 'flex' : 'none';
+            });
         };
 
         /**

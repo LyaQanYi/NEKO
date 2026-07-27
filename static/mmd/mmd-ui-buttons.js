@@ -48,6 +48,7 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
     // MMD 特定的响应式布局处理
     const applyResponsiveFloatingLayout = () => {
+        this.syncResponsiveButtonVisibility(buttonsContainer);
         if (isYuiGuideFloatingToolbarSuppressed()) {
             buttonsContainer.style.display = 'none';
             buttonsContainer.style.visibility = 'hidden';
@@ -126,7 +127,6 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
     // 创建按钮
     buttonConfigs.forEach(config => {
-        if (config.mobileOnly && !(window.isMobileWidth && window.isMobileWidth())) return;
         if (window.isMobileWidth && window.isMobileWidth() && (config.id === 'agent' || config.id === 'goodbye')) return;
 
         const { btnWrapper, btn, imgOff, imgOn } = this.createButtonElement(config, buttonsContainer);
@@ -314,6 +314,7 @@ MMDManager.prototype.setupFloatingButtons = function() {
             triggerImg: (config.hasPopup && config.separatePopupTrigger && !(window.isMobileWidth && window.isMobileWidth())) ? triggerImg : null
         };
     });
+    applyResponsiveFloatingLayout();
 
     // 处理"请她离开"事件
     // 注意：返回按钮的位置、显示、以及浮动按钮的隐藏均由 app-ui 统一处理，

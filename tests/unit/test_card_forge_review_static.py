@@ -39,6 +39,9 @@ def test_mobile_avatar_layout_keeps_screen_share_control_for_every_renderer():
     assert "id: 'screen'" in methods_source
     assert "titleKey: 'buttons.screenShare'" in methods_source
     assert "mobileOnly: true" in methods_source
+    assert "btnWrapper.dataset.mobileOnly = 'true'" in methods_source
+    assert "ManagerPrototype.syncResponsiveButtonVisibility" in methods_source
+    assert "querySelectorAll('[data-mobile-only=\"true\"]')" in methods_source
 
     renderer_sources = [
         _read("static/live2d/live2d-ui-buttons.js"),
@@ -47,7 +50,8 @@ def test_mobile_avatar_layout_keeps_screen_share_control_for_every_renderer():
         _read("static/pngtuber-core.js"),
     ]
     for source in renderer_sources:
-        assert "config.mobileOnly" in source
+        assert "syncResponsiveButtonVisibility(buttonsContainer)" in source
+        assert "if (config.mobileOnly" not in source
         assert "config.id === 'screen'" in source
 
 
