@@ -53,6 +53,9 @@ def test_mobile_avatar_layout_keeps_screen_share_control_for_every_renderer():
         assert "syncResponsiveButtonVisibility(buttonsContainer)" in source
         assert "if (config.mobileOnly" not in source
         assert "config.id === 'screen'" in source
+    for source in renderer_sources[1:3]:
+        assert "{ id: 'screen', mobileOnly: true }" in source
+        assert ".filter(c => !(c.mobileOnly && !mobile))" in source
 
 
 def test_stop_script_resolves_runtime_ports_before_terminating_processes():
@@ -63,6 +66,9 @@ def test_stop_script_resolves_runtime_ports_before_terminating_processes():
     assert "$env:MAIN_SERVER_PORT" in source
     assert '"N.E.K.O\\port_config.json"' in source
     assert "$env:NEKO_CARD_FORGE_PORT" in source
+    assert "$env:CARD_FORGE_PORT" in source
+    assert "$config.CARD_FORGE_PORT" in source
+    assert "$cardForgePort = Get-DesktopCardForgePort" in source
     assert "$ports = @($mainServerPort, $cardForgePort, 5173)" in source
     assert '("N.E.K.O Main Server - {0}" -f $mainServerPort)' in source
     assert '("Neko Card Forge Server - {0}" -f $cardForgePort)' in source

@@ -31,9 +31,30 @@ function Get-DesktopMainServerPort {
   return 48911
 }
 
+function Get-DesktopCardForgePort {
+  foreach ($value in @($env:NEKO_CARD_FORGE_PORT, $env:CARD_FORGE_PORT)) {
+    $port = ConvertTo-ValidPort -Value $value
+    if ($null -ne $port) { return $port }
+  }
+
+  $appDataRoot = if ($env:APPDATA) {
+    $env:APPDATA
+  } else {
+    Join-Path $HOME "AppData\Roaming"
+  }
+  $configPath = Join-Path $appDataRoot "N.E.K.O\port_config.json"
+  try {
+    $config = Get-Content -LiteralPath $configPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    $port = ConvertTo-ValidPort -Value $config.CARD_FORGE_PORT
+    if ($null -ne $port) { return $port }
+  } catch {
+    # Missing/malformed desktop config falls back to the source default.
+  }
+  return 3001
+}
+
 $mainServerPort = Get-DesktopMainServerPort
-$cardForgePort = ConvertTo-ValidPort -Value $env:NEKO_CARD_FORGE_PORT
-if ($null -eq $cardForgePort) { $cardForgePort = 3001 }
+$cardForgePort = Get-DesktopCardForgePort
 $ports = @($mainServerPort, $cardForgePort, 5173) | Select-Object -Unique
 $windowTitles = @(
   ("N.E.K.O Main Server - {0}" -f $mainServerPort),
