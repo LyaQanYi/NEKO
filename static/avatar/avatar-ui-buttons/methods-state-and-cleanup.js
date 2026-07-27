@@ -224,8 +224,12 @@ Object.assign(AvatarButtonMixin.methods, {
                 this.setButtonActive('mic', isRecording);
             }
 
-            // 旧 screen 浮动按钮已被 social 取代；屏幕分享状态由隐藏的
-            // #screenButton 作为内部锚点维护，不再暴露独立按钮。
+            // 桌面槽位由 social 取代，但移动布局仍有独立的 screen 按钮。
+            // 以隐藏的 #screenButton 为真实状态，避免重建按钮后保留乐观状态。
+            const screenButton = document.getElementById('screenButton');
+            if (this._floatingButtons.screen && screenButton) {
+                this.setButtonActive('screen', screenButton.classList.contains('active'));
+            }
         };
 
         /**

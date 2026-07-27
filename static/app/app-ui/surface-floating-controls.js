@@ -136,18 +136,24 @@
 
         // 屏幕分享按钮（toggle模式）
         window.addEventListener('live2d-screen-toggle', async (e) => {
-            if (e.detail.active) {
-                if (typeof window.startScreenSharing === 'function') {
-                    await window.startScreenSharing();
+            try {
+                if (e.detail.active) {
+                    if (typeof window.startScreenSharing === 'function') {
+                        await window.startScreenSharing();
+                    } else {
+                        console.error('startScreenSharing function not found');
+                    }
                 } else {
-                    console.error('startScreenSharing function not found');
+                    if (typeof window.stopScreenSharing === 'function') {
+                        await window.stopScreenSharing();
+                        screenSharingStartedByVoice = false;
+                    } else {
+                        console.error('stopScreenSharing function not found');
+                    }
                 }
-            } else {
-                if (typeof window.stopScreenSharing === 'function') {
-                    await window.stopScreenSharing();
-                    screenSharingStartedByVoice = false;
-                } else {
-                    console.error('stopScreenSharing function not found');
+            } finally {
+                if (typeof window.syncFloatingScreenButtonState === 'function') {
+                    window.syncFloatingScreenButtonState(isScreenSharingActive());
                 }
             }
         });

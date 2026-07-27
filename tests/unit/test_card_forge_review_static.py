@@ -57,6 +57,27 @@ def test_mobile_avatar_layout_keeps_screen_share_control_for_every_renderer():
         assert ".filter(c => !(c.mobileOnly && !mobile))" in source
 
 
+def test_mobile_screen_share_state_reconciles_after_capture_attempts():
+    state_source = _read(
+        "static/avatar/avatar-ui-buttons/methods-state-and-cleanup.js"
+    )
+    controls_source = _read("static/app/app-ui/surface-floating-controls.js")
+
+    assert "const screenButton = document.getElementById('screenButton');" in state_source
+    assert (
+        "this.setButtonActive('screen', screenButton.classList.contains('active'));"
+        in state_source
+    )
+    screen_toggle = controls_source.split(
+        "window.addEventListener('live2d-screen-toggle'", 1
+    )[1].split("// Agent工具按钮", 1)[0]
+    assert "} finally {" in screen_toggle
+    assert (
+        "window.syncFloatingScreenButtonState(isScreenSharingActive());"
+        in screen_toggle
+    )
+
+
 def test_stop_script_resolves_runtime_ports_before_terminating_processes():
     source = _read("scripts/card-forge/stop-card-forge.ps1")
     start_source = _read("scripts/card-forge/start-card-forge.bat")
