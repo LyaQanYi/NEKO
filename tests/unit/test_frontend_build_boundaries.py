@@ -33,5 +33,7 @@ def test_card_forge_stays_out_of_production_frontend_builds() -> None:
 
     assert "CF_DIR=" not in shell_build
     assert 'set "CF_DIR=' not in batch_build
+    assert "card-forge" not in shell_build.lower()
+    assert "card-forge" not in batch_build.lower()
     assert "本地开发工具" in card_forge_readme
     assert "不会安装或构建 `frontend/card-forge`" in card_forge_readme
