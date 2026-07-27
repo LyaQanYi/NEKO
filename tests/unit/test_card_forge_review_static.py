@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -68,13 +69,13 @@ def test_mobile_screen_share_state_reconciles_after_capture_attempts():
         "this.setButtonActive('screen', screenButton.classList.contains('active'));"
         in state_source
     )
-    screen_toggle = controls_source.split(
-        "window.addEventListener('live2d-screen-toggle'", 1
-    )[1].split("// Agent工具按钮", 1)[0]
-    assert "} finally {" in screen_toggle
-    assert (
-        "window.syncFloatingScreenButtonState(isScreenSharingActive());"
-        in screen_toggle
+    assert re.search(
+        r"window\.addEventListener\('live2d-screen-toggle', async \(e\) => \{.*?"
+        r"\} finally \{\s*"
+        r"if \(typeof window\.syncFloatingScreenButtonState === 'function'\) \{\s*"
+        r"window\.syncFloatingScreenButtonState\(isScreenSharingActive\(\)\);",
+        controls_source,
+        re.S,
     )
 
 
