@@ -762,6 +762,44 @@ def test_sync_ticket_rejects_cross_site_browser_churn(client):
     assert len(C._native_sync_tickets) == len(before) + 1
 
 
+def test_auth_status_rejects_cross_site_before_cloud_lookup(client, monkeypatch):
+    from main_routers import community_oauth
+
+    calls = 0
+
+    async def resolve_saved_oauth_status():
+        nonlocal calls
+        calls += 1
+        return {"logged_in": False, "snapshot": None, "auth": {}}
+
+    monkeypatch.setattr(
+        community_oauth,
+        "resolve_saved_oauth_status",
+        resolve_saved_oauth_status,
+    )
+
+    evil_origin = client.get(
+        "/api/card-drop/auth-status",
+        headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+    )
+    blind_browser_get = client.get(
+        "/api/card-drop/auth-status",
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+    same_origin = client.get(
+        "/api/card-drop/auth-status",
+        headers={
+            "Origin": "http://localhost:48911",
+            "Sec-Fetch-Site": "same-origin",
+        },
+    )
+
+    assert evil_origin.status_code == 403
+    assert blind_browser_get.status_code == 403
+    assert same_origin.status_code == 200
+    assert calls == 1
+
+
 def test_bind_client_approval_uses_persisted_local_id_and_consumes_ticket(
     client, monkeypatch,
 ):

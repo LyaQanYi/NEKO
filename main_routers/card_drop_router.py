@@ -1004,7 +1004,13 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
 
 
 @router.get("/auth-status", summary="社区登录状态")
-async def auth_status_endpoint():
+async def auth_status_endpoint(request: Request):
+    if not _local_request_source_allowed(request):
+        return JSONResponse(
+            {"detail": "origin_not_allowed"},
+            status_code=403,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
     # Validate the bearer (and refresh OAuth sessions when necessary) before
     # telling the UI that it is logged in.  Import lazily to keep the router
     # modules' existing dependency direction intact.

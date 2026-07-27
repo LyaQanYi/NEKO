@@ -271,10 +271,12 @@ async def _refresh_oauth_token(
         payload = response.json()
     except (ValueError, TypeError):
         payload = None
-    if response.status_code >= 500:
+    if response.status_code in {408, 425, 429} or response.status_code >= 500:
         return "unavailable", None
     if response.status_code >= 400:
-        return "rejected", payload if isinstance(payload, dict) else None
+        if isinstance(payload, dict) and payload.get("error") == "invalid_grant":
+            return "rejected", payload
+        return "unavailable", None
     if not isinstance(payload, dict) or not str(payload.get("access_token") or "").strip():
         return "unavailable", None
     return "ok", payload

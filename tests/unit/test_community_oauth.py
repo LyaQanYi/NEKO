@@ -198,6 +198,54 @@ async def test_oauth_status_refreshes_rejected_access_token(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status_code", "payload", "expected_outcome"),
+    [
+        (408, {"error": "invalid_grant"}, "unavailable"),
+        (425, {"error": "temporarily_unavailable"}, "unavailable"),
+        (429, {"error": "invalid_grant"}, "unavailable"),
+        (400, {"error": "temporarily_unavailable"}, "unavailable"),
+        (400, {"error": "invalid_grant"}, "rejected"),
+    ],
+)
+async def test_oauth_refresh_rejects_only_definitive_invalid_grant(
+    monkeypatch,
+    status_code,
+    payload,
+    expected_outcome,
+):
+    class FakeResponse:
+        def json(self):
+            return payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            response = FakeResponse()
+            response.status_code = status_code
+            return response
+
+    monkeypatch.setattr(O.httpx, "AsyncClient", FakeAsyncClient)
+
+    outcome, response_payload = await O._refresh_oauth_token(
+        refresh_token="refresh-token",
+        client_id="desktop-client",
+        auth_public_url="https://auth.example",
+    )
+
+    assert outcome == expected_outcome
+    assert response_payload == (payload if expected_outcome == "rejected" else None)
+
+
+@pytest.mark.unit
 async def test_oauth_status_clears_only_rejected_unrefreshable_snapshot(monkeypatch):
     snapshot = {
         "base_url": "https://community.example",
