@@ -10,7 +10,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-LAUNCHER_PATH = PROJECT_ROOT / "scripts" / "card-forge" / "start_card_forge.py"
+LAUNCHER_PATH = PROJECT_ROOT / "scripts" / "card_forge" / "start_card_forge.py"
 
 
 def _load_launcher():

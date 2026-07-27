@@ -24,6 +24,7 @@ def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
         [node_executable, "-"],
         input=script,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         cwd=PROJECT_ROOT,
         timeout=10,

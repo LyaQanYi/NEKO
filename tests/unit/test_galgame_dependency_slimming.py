@@ -69,6 +69,29 @@ def _load_verifier():
     return verifier
 
 
+def _require_galgame_ocr_import_deps() -> None:
+    # Unit CI uses plain `uv sync` (no --group galgame). Importing RapidOCR pulls
+    # pyclipper + onnxruntime via ch_ppocr_det / OrtInferSession; skip when absent.
+    pytest.importorskip("pyclipper")
+    pytest.importorskip("onnxruntime")
+
+
+def _load_pillow_cv():
+    # Load _pillow_cv by file path so we do not execute package __init__ (which
+    # imports RapidOCR → pyclipper/onnxruntime). Geometry helpers are pure numpy/PIL.
+    module_path = RAPIDOCR_PILLOW_ROOT / "rapidocr_onnxruntime" / "_pillow_cv.py"
+    spec = importlib.util.spec_from_file_location(
+        "rapidocr_onnxruntime_pillow_cv_under_test",
+        module_path,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_pyproject() -> dict:
     with (ROOT / "pyproject.toml").open("rb") as handle:
         return tomllib.load(handle)
@@ -139,14 +162,16 @@ def test_rapidocr_pillow_source_has_no_removed_dependency_imports() -> None:
 
 
 def test_pillow_cv_geometry_helpers_cover_shapely_and_perspective_replacements() -> None:
-    from rapidocr_onnxruntime._pillow_cv import (
-        dilate,
-        min_area_box,
-        perspective_transform_matrix,
-        polygon_area,
-        polygon_perimeter,
-        resize,
-    )
+    # _pillow_cv itself only needs scipy (galgame transitive); avoid package
+    # __init__ so missing pyclipper/onnxruntime does not block this helper suite.
+    pytest.importorskip("scipy")
+    pillow_cv = _load_pillow_cv()
+    dilate = pillow_cv.dilate
+    min_area_box = pillow_cv.min_area_box
+    perspective_transform_matrix = pillow_cv.perspective_transform_matrix
+    polygon_area = pillow_cv.polygon_area
+    polygon_perimeter = pillow_cv.polygon_perimeter
+    resize = pillow_cv.resize
 
     rect = np.array([[0, 0], [4, 0], [4, 3], [0, 3]], dtype=np.float32)
     assert polygon_area(rect) == pytest.approx(12.0)
@@ -357,6 +382,7 @@ def test_rapidocr_pillow_verifier_can_build_manifest_from_category_dirs() -> Non
 
 
 def test_rapidocr_pillow_preprocess_accumulates_resize_ratios() -> None:
+    _require_galgame_ocr_import_deps()
     from rapidocr_onnxruntime.main import RapidOCR
 
     engine = object.__new__(RapidOCR)
@@ -372,6 +398,7 @@ def test_rapidocr_pillow_preprocess_accumulates_resize_ratios() -> None:
 
 
 def test_rapidocr_call_uses_per_call_thresholds_without_mutating_instance() -> None:
+    _require_galgame_ocr_import_deps()
     from rapidocr_onnxruntime.main import RapidOCR
 
     engine = object.__new__(RapidOCR)
@@ -407,6 +434,7 @@ def test_rapidocr_call_uses_per_call_thresholds_without_mutating_instance() -> N
 
 
 def test_rapidocr_cli_visualization_handles_empty_and_det_only_results(monkeypatch, tmp_path) -> None:
+    _require_galgame_ocr_import_deps()
     from rapidocr_onnxruntime import main as rapidocr_main
 
     image_path = tmp_path / "sample.png"

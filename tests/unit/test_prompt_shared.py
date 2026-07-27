@@ -70,6 +70,7 @@ runScenario()
         [node_executable, "-"],
         input=node_harness,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         check=False,
         timeout=10,

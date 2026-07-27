@@ -80,8 +80,8 @@ def test_mobile_screen_share_state_reconciles_after_capture_attempts():
 
 
 def test_stop_script_resolves_runtime_ports_before_terminating_processes():
-    source = _read("scripts/card-forge/stop-card-forge.ps1")
-    start_source = _read("scripts/card-forge/start-card-forge.bat")
+    source = _read("scripts/card_forge/stop-card-forge.ps1")
+    start_source = _read("scripts/card_forge/start-card-forge.bat")
 
     assert "$env:NEKO_MAIN_SERVER_PORT" in source
     assert "$env:MAIN_SERVER_PORT" in source
@@ -105,8 +105,8 @@ def test_stop_script_resolves_runtime_ports_before_terminating_processes():
 
 
 def test_windows_launchers_bootstrap_frontend_dependencies_before_services():
-    python_launcher = _read("scripts/card-forge/start_card_forge.py")
-    batch_launcher = _read("scripts/card-forge/start-card-forge.bat")
+    python_launcher = _read("scripts/card_forge/start_card_forge.py")
+    batch_launcher = _read("scripts/card_forge/start-card-forge.bat")
 
     assert "ensure_frontend_dependencies()" in python_launcher
     assert python_launcher.index("ensure_frontend_dependencies()") < python_launcher.index(
