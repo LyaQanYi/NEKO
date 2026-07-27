@@ -61,9 +61,14 @@ test('Day1 tutorial end schedules the system tray intro for complete, skip and a
   const onTutorialEndBlock = getMethodBlock(universalManagerSource, 'onTutorialEnd');
 
   assert.match(onTutorialEndBlock, /const scheduledDay1SystrayIntroPromise = this\.scheduleDay1SystrayIntroAfterTeardown\(/);
-  assert.match(onTutorialEndBlock, /const day1SystrayIntroPromise = Promise\.all\(\[/);
-  assert.match(onTutorialEndBlock, /scheduledDay1SystrayIntroPromise/);
-  assert.match(onTutorialEndBlock, /stateFlushPromise/);
+  const promiseAllMatch = onTutorialEndBlock.match(
+    /const day1SystrayIntroPromise = Promise\.all\(\[([\s\S]*?)\]\)/
+  );
+  assert.ok(promiseAllMatch, 'expected day1SystrayIntroPromise to be created with Promise.all');
+  assert.match(
+    promiseAllMatch[1],
+    /scheduledDay1SystrayIntroPromise[\s\S]*stateFlushPromise/
+  );
   assert.match(onTutorialEndBlock, /return day1SystrayIntroPromise;/);
   assert.match(onTutorialEndBlock, /endMeta\.rawReason/);
   assert.match(onTutorialEndBlock, /avatarFloatingEndState/);

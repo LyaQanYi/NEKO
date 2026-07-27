@@ -227,15 +227,68 @@
                 } catch (_) { /* ignore */ }
                 popupRef = null;
             };
-            const navigateBrowserPopup = (targetUrl) => {
+            const navigateBrowserPopup = (targetUrl, options = {}) => {
                 if (!popupRef) {
                     return false;
                 }
-                popupRef.opener = null;
-                popupRef.location.replace(targetUrl);
-                try { popupRef.focus && popupRef.focus(); } catch (_) { /* ignore */ }
-                popupRef = null;
-                return true;
+                const currentPopup = popupRef;
+                try { currentPopup.opener = null; } catch (_) { /* ignore */ }
+                let navigated = true;
+                try {
+                    currentPopup.location.replace(targetUrl);
+                } catch (_) {
+                    // Once OAuth has moved the popup cross-origin, Location methods may
+                    // be inaccessible even though assigning a new URL is still allowed.
+                    try {
+                        currentPopup.location = targetUrl;
+                    } catch (_) {
+                        navigated = false;
+                    }
+                }
+                try { currentPopup.focus && currentPopup.focus(); } catch (_) { /* ignore */ }
+                if (!options.keepReference || !navigated) {
+                    popupRef = null;
+                }
+                return navigated;
+            };
+            const waitForBrowserOAuthCompletion = async (timeoutMs) => {
+                const deadline = Date.now() + timeoutMs;
+                while (popupRef && Date.now() < deadline) {
+                    try {
+                        if (popupRef.closed) {
+                            popupRef = null;
+                            return false;
+                        }
+                    } catch (_) { /* ignore */ }
+                    await new Promise((resolve) => setTimeout(resolve, 1000));
+                    try {
+                        const statusRes = await fetch('/api/card-drop/oauth/status', { cache: 'no-store' });
+                        if (statusRes.ok) {
+                            const statusJson = await statusRes.json();
+                            if (statusJson && statusJson.logged_in) {
+                                return true;
+                            }
+                        }
+                    } catch (_) { /* retry until the OAuth window closes or expires */ }
+                }
+                return false;
+            };
+            const attachNativeSyncTicket = async (targetUrl) => {
+                targetUrl.hash = '';
+                try {
+                    const ticketRes = await fetch('/api/card-drop/sync-ticket', { cache: 'no-store' });
+                    if (ticketRes.ok) {
+                        const ticketJson = await ticketRes.json();
+                        if (ticketJson && ticketJson.sync_ticket) {
+                            targetUrl.hash = new URLSearchParams({
+                                native_sync: String(ticketJson.sync_ticket)
+                            }).toString();
+                        }
+                    }
+                } catch (ticketErr) {
+                    console.warn('[social] native session sync ticket fetch failed (non-fatal):', ticketErr);
+                }
+                return targetUrl;
             };
             try {
                 if (!isElectron) {
@@ -288,19 +341,7 @@
                 }
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
                 // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
-                try {
-                    const ticketRes = await fetch('/api/card-drop/sync-ticket', { cache: 'no-store' });
-                    if (ticketRes.ok) {
-                        const ticketJson = await ticketRes.json();
-                        if (ticketJson && ticketJson.sync_ticket) {
-                            targetUrl.hash = new URLSearchParams({
-                                native_sync: String(ticketJson.sync_ticket)
-                            }).toString();
-                        }
-                    }
-                } catch (ticketErr) {
-                    console.warn('[social] native session sync ticket fetch failed (non-fatal):', ticketErr);
-                }
+                await attachNativeSyncTicket(targetUrl);
                 // 顺手把 client_id 拼进 URL（仅关联游客身份，不构成登录态同步授权）。
                 try {
                     const cidRes = await fetch('/api/system/client-id');
@@ -335,6 +376,8 @@
                     console.warn('[social] auth-status fetch failed (non-fatal):', statusErr);
                 }
                 if (!communityLoggedIn) {
+                    let browserOAuthStarted = false;
+                    let browserOAuthTimeoutMs = 10 * 60 * 1000;
                     try {
                         const oauthRes = await fetch('/api/card-drop/oauth/start', {
                             method: 'POST',
@@ -348,12 +391,21 @@
                             if (authUrl) {
                                 if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
                                     await window.electronShell.openExternal(authUrl);
-                                } else if (!navigateBrowserPopup(authUrl)) {
+                                } else if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
                                     if (typeof window.showStatusToast === 'function') {
                                         window.showStatusToast(
                                             (window.t && window.t('app.socialOpenFailed', { error: 'OAuth popup blocked' }))
                                                 || '登录窗口打开失败：请允许弹窗后重试',
                                             4000
+                                        );
+                                    }
+                                } else {
+                                    browserOAuthStarted = true;
+                                    const expiresInSec = Number(oauthJson && oauthJson.expires_in);
+                                    if (Number.isFinite(expiresInSec) && expiresInSec > 0) {
+                                        browserOAuthTimeoutMs = Math.min(
+                                            browserOAuthTimeoutMs,
+                                            expiresInSec * 1000
                                         );
                                     }
                                 }
@@ -375,7 +427,17 @@
                         console.warn('[social] oauth/start failed (non-fatal):', oauthErr);
                     } finally {
                         if (!isElectron && popupRef) {
-                            navigateBrowserPopup(url);
+                            if (browserOAuthStarted) {
+                                const oauthCompleted = await waitForBrowserOAuthCompletion(browserOAuthTimeoutMs);
+                                if (oauthCompleted && popupRef) {
+                                    const refreshedTargetUrl = await attachNativeSyncTicket(
+                                        new URL(url, window.location.href)
+                                    );
+                                    navigateBrowserPopup(refreshedTargetUrl.toString());
+                                }
+                            } else {
+                                navigateBrowserPopup(url);
+                            }
                         }
                     }
                 } else if (!isElectron) {

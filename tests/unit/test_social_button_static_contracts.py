@@ -51,7 +51,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
     assert protocol_guard in listener
     assert listener.index(protocol_guard) < listener.index(
-        "fetch('/api/card-drop/sync-ticket', { cache: 'no-store' })"
+        "await attachNativeSyncTicket(targetUrl)"
     )
 
 
@@ -69,14 +69,26 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         "const cfgRes = await fetch('/api/system/social/config');"
     )
     assert "oauthPopupRef" not in listener
-    assert "const navigateBrowserPopup = (targetUrl) => {" in listener
+    assert "const navigateBrowserPopup = (targetUrl, options = {}) => {" in listener
     assert listener.count("window.open('about:blank', '_blank')") == 1
-    assert "popupRef.opener = null;" in listener
-    assert "popupRef.location.replace(targetUrl);" in listener
-    assert "navigateBrowserPopup(authUrl)" in listener
+    assert "currentPopup.opener = null;" in listener
+    assert "currentPopup.location.replace(targetUrl);" in listener
+    assert "if (!options.keepReference || !navigated)" in listener
+    assert "const waitForBrowserOAuthCompletion = async (timeoutMs) => {" in listener
+    assert "fetch('/api/card-drop/oauth/status', { cache: 'no-store' })" in listener
+    assert "navigateBrowserPopup(authUrl, { keepReference: true })" in listener
+    assert "await waitForBrowserOAuthCompletion(browserOAuthTimeoutMs)" in listener
+    assert "const refreshedTargetUrl = await attachNativeSyncTicket(" in listener
+    assert "navigateBrowserPopup(refreshedTargetUrl.toString())" in listener
     assert "navigateBrowserPopup(url)" in listener
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
-        "navigateBrowserPopup(authUrl)"
+        "navigateBrowserPopup(authUrl, { keepReference: true })"
+    )
+    assert listener.index("navigateBrowserPopup(authUrl, { keepReference: true })") < listener.index(
+        "await waitForBrowserOAuthCompletion(browserOAuthTimeoutMs)"
+    )
+    assert listener.index("await waitForBrowserOAuthCompletion(browserOAuthTimeoutMs)") < listener.index(
+        "navigateBrowserPopup(refreshedTargetUrl.toString())"
     )
     assert "window.open(authUrl, '_blank'" not in listener
     assert "closePopup();" in listener
