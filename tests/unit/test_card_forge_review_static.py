@@ -104,6 +104,22 @@ def test_stop_script_resolves_runtime_ports_before_terminating_processes():
     assert source.count("Write-Verbose") >= 3
 
 
+def test_windows_launchers_bootstrap_frontend_dependencies_before_services():
+    python_launcher = _read("scripts/card-forge/start_card_forge.py")
+    batch_launcher = _read("scripts/card-forge/start-card-forge.bat")
+
+    assert "ensure_frontend_dependencies()" in python_launcher
+    assert python_launcher.index("ensure_frontend_dependencies()") < python_launcher.index(
+        'print(f"[1/3] Opening N.E.K.O main server window'
+    )
+    assert 'subprocess.run(["npm.cmd", "ci"]' in python_launcher
+    assert 'if not exist "%FRONTEND_ROOT%\\node_modules\\.bin\\vite.cmd"' in batch_launcher
+    assert "call npm ci" in batch_launcher
+    assert batch_launcher.index("call npm ci") < batch_launcher.index(
+        "echo [1/3] Opening N.E.K.O main server window"
+    )
+
+
 def test_live2d_click_actions_are_not_dispatched_by_the_generic_listener_twice():
     source = _read("static/live2d/live2d-ui-buttons.js")
 

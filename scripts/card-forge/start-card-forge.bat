@@ -26,6 +26,37 @@ if not exist "%FRONTEND_ROOT%\package.json" (
   exit /b 1
 )
 
+if not exist "%FRONTEND_ROOT%\package-lock.json" (
+  echo [startup error] Card forge package lock not found:
+  echo   "%FRONTEND_ROOT%\package-lock.json"
+  pause
+  exit /b 1
+)
+
+if not exist "%FRONTEND_ROOT%\node_modules\.bin\vite.cmd" (
+  where npm.cmd >nul 2>&1
+  if errorlevel 1 (
+    echo [startup error] npm.cmd not found. Install Node.js/npm and retry.
+    pause
+    exit /b 1
+  )
+  echo [preflight] Card forge dependencies are missing; running npm ci...
+  pushd "%FRONTEND_ROOT%"
+  call npm ci
+  if errorlevel 1 (
+    popd
+    echo [startup error] npm ci failed for Card Forge.
+    pause
+    exit /b 1
+  )
+  popd
+  if not exist "%FRONTEND_ROOT%\node_modules\.bin\vite.cmd" (
+    echo [startup error] npm ci completed but Vite is still missing.
+    pause
+    exit /b 1
+  )
+)
+
 set "MAIN_SERVER_PORT_VALUE=48911"
 set "CARD_FORGE_PORT_VALUE=3001"
 for /f "usebackq delims=" %%P in (`node "%FRONTEND_ROOT%\port-config.js" MAIN_SERVER_PORT 48911`) do set "MAIN_SERVER_PORT_VALUE=%%P"

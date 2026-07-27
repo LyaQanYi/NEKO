@@ -16,7 +16,7 @@ uv run local_server/card_forge_server/server.py
 
 > 仍依赖 `httpx`（可选 HTTP facts 源）；N.E.K.O 根目录的 `.venv` 中通常已带。
 
-Windows 上要一次拉起「主服务 + 铸造机服务 + `frontend/card-forge` 前端」三个窗口，用 `scripts/card-forge/start-card-forge.bat`，停止用同目录的 `stop-card-forge.bat`。
+Windows 上要一次拉起「主服务 + 铸造机服务 + `frontend/card-forge` 前端」三个窗口，用 `scripts/card-forge/start-card-forge.bat`，停止用同目录的 `stop-card-forge.bat`。启动器会在本地 Vite 缺失时先执行一次 `npm ci`；依赖安装失败时不会继续拉起三个服务。
 
 `card-forge` 当前是源码检出后的本地开发工具，不属于桌面或容器发布内容。根目录的 `build_frontend.bat` / `build_frontend.sh` 只构建会进入生产分发的前端，因此不会安装或构建 `frontend/card-forge`。需要单独验证静态构建时，请在该目录运行 `npm ci && npm run build`；生成的 `dist/` 仅用于本地检查，没有生产消费方。
 

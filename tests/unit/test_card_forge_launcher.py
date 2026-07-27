@@ -65,12 +65,70 @@ def test_resolve_configured_port_falls_back_for_non_utf8_config(tmp_path):
     ) == 3001
 
 
+def test_frontend_dependency_preflight_skips_install_when_vite_exists(
+    tmp_path,
+    monkeypatch,
+):
+    launcher = _load_launcher()
+    frontend_root = tmp_path / "card-forge"
+    vite_launcher = frontend_root / "node_modules" / ".bin" / "vite.cmd"
+    vite_launcher.parent.mkdir(parents=True)
+    vite_launcher.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("npm ci should not run"),
+    )
+
+    launcher.ensure_frontend_dependencies(frontend_root)
+
+
+def test_frontend_dependency_preflight_runs_locked_install_when_vite_is_missing(
+    tmp_path,
+    monkeypatch,
+):
+    launcher = _load_launcher()
+    frontend_root = tmp_path / "card-forge"
+    frontend_root.mkdir()
+    (frontend_root / "package-lock.json").write_text("{}", encoding="utf-8")
+    calls = []
+
+    def fake_run(command, *, cwd, check):
+        calls.append((command, cwd, check))
+        vite_launcher = cwd / "node_modules" / ".bin" / "vite.cmd"
+        vite_launcher.parent.mkdir(parents=True)
+        vite_launcher.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    launcher.ensure_frontend_dependencies(frontend_root)
+
+    assert calls == [(["npm.cmd", "ci"], frontend_root, True)]
+
+
+def test_frontend_dependency_preflight_reports_missing_npm(tmp_path, monkeypatch):
+    launcher = _load_launcher()
+    frontend_root = tmp_path / "card-forge"
+    frontend_root.mkdir()
+    (frontend_root / "package-lock.json").write_text("{}", encoding="utf-8")
+
+    def fail_run(*_args, **_kwargs):
+        raise FileNotFoundError("npm.cmd")
+
+    monkeypatch.setattr(launcher.subprocess, "run", fail_run)
+
+    with pytest.raises(RuntimeError, match="Install Node.js/npm"):
+        launcher.ensure_frontend_dependencies(frontend_root)
+
+
 def test_main_passes_resolved_ports_to_every_child(monkeypatch):
     launcher = _load_launcher()
     launched = []
 
     monkeypatch.setattr(launcher, "_ensure_windows", lambda: None)
     monkeypatch.setattr(launcher, "ensure_path", lambda *_args: None)
+    monkeypatch.setattr(launcher, "ensure_frontend_dependencies", lambda: None)
     monkeypatch.setattr(launcher.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr("builtins.input", lambda: "")
     monkeypatch.setattr(

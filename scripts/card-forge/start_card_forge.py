@@ -45,6 +45,37 @@ def ensure_path(path: Path, label: str) -> None:
         raise FileNotFoundError(f"{label} not found: {path}")
 
 
+def ensure_frontend_dependencies(frontend_root: Path = FRONTEND_ROOT) -> None:
+    """Install the locked Card Forge frontend dependencies when Vite is absent."""
+    vite_launcher = frontend_root / "node_modules" / ".bin" / "vite.cmd"
+    if vite_launcher.is_file():
+        return
+
+    package_lock = frontend_root / "package-lock.json"
+    if not package_lock.is_file():
+        raise RuntimeError(
+            f"Card forge package lock not found: {package_lock}. "
+            "Restore package-lock.json before starting."
+        )
+
+    print("[preflight] Card forge dependencies are missing; running npm ci...")
+    try:
+        subprocess.run(["npm.cmd", "ci"], cwd=frontend_root, check=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "npm.cmd not found. Install Node.js/npm and retry the Card Forge launcher."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"npm ci failed for Card Forge (exit code {exc.returncode})."
+        ) from exc
+
+    if not vite_launcher.is_file():
+        raise RuntimeError(
+            f"npm ci completed but the Vite launcher is still missing: {vite_launcher}"
+        )
+
+
 def _valid_port(value: object) -> int | None:
     try:
         port = int(str(value).strip())
@@ -112,7 +143,7 @@ def _ensure_windows() -> None:
         "在 macOS / Linux 上请分别在三个终端里手动执行：",
         f"  1) cd {PROJECT_ROOT} && uv run launcher.py",
         f"  2) cd {FORGE_SERVER_ROOT} && uv run server.py",
-        f"  3) cd {FRONTEND_ROOT} && npm run dev",
+        f"  3) cd {FRONTEND_ROOT} && npm ci && npm run dev",
     ])
     raise RuntimeError(msg)
 
@@ -122,6 +153,7 @@ def main() -> int:
     ensure_path(PROJECT_ROOT / "launcher.py", "N.E.K.O launcher")
     ensure_path(FORGE_SERVER_ROOT / "server.py", "Card forge server")
     ensure_path(FRONTEND_ROOT / "package.json", "Card forge frontend")
+    ensure_frontend_dependencies()
 
     main_server_port = resolve_configured_port("MAIN_SERVER_PORT", 48911)
     card_forge_port = resolve_configured_port("CARD_FORGE_PORT", 3001)
