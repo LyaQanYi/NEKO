@@ -166,8 +166,8 @@ def _is_china_region() -> bool:
 
     try:
         macos_locale = _get_macos_locale()
-        if _locale_is_mainland_china(macos_locale):
-            return True
+        if macos_locale:
+            return _locale_is_mainland_china(macos_locale)
 
         system_locale = locale.getlocale()[0]
         if system_locale:

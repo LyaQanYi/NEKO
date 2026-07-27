@@ -59,6 +59,15 @@ def test_macos_chinese_locale_uses_mainland_region_contract(
     assert language_utils._is_china_region() is expected
 
 
+def test_macos_locale_overrides_stale_process_locale(monkeypatch):
+    monkeypatch.delenv("NEKO_IS_CHINA_REGION", raising=False)
+    monkeypatch.setenv("LANG", "zh_CN.UTF-8")
+    monkeypatch.setattr(language_utils, "_get_macos_locale", lambda: "zh_TW")
+    monkeypatch.setattr(language_utils.locale, "getlocale", lambda: ("zh_CN", "UTF-8"))
+
+    assert language_utils._is_china_region() is False
+
+
 def test_region_env_populates_public_region_cache(monkeypatch):
     monkeypatch.setenv("NEKO_IS_CHINA_REGION", "false")
     assert language_utils.get_global_region() == "non-china"

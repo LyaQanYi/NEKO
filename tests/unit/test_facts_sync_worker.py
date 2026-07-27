@@ -153,6 +153,43 @@ async def test_post_facts_batch_accepts_empty_success_response(
 
 
 @pytest.mark.asyncio
+async def test_post_facts_batch_invalidates_cached_registration_on_unauthorized(
+    monkeypatch,
+) -> None:
+    class UnauthorizedResponse:
+        status_code = 401
+        text = "client not registered"
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, _url, **_kwargs):
+            return UnauthorizedResponse()
+
+    monkeypatch.setattr(sync_worker.httpx, "AsyncClient", FakeAsyncClient)
+    cache_key = "https://community.example|client-id"
+    sync_worker._client_registered[cache_key] = True
+
+    ok, payload = await sync_worker._post_facts_batch(
+        "https://community.example",
+        "client-id",
+        "Lanlan",
+        [{"fact_hash": "hash-12345678", "text": "safe", "importance": 0.8}],
+    )
+
+    assert ok is False
+    assert payload is None
+    assert cache_key not in sync_worker._client_registered
+
+
+@pytest.mark.asyncio
 async def test_failed_facts_remain_retryable_after_diagnostic_threshold(
     tmp_path,
     monkeypatch,

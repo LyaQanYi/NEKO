@@ -209,6 +209,10 @@ async def _post_facts_batch(
     except (httpx.HTTPError, OSError) as exc:
         logger.warning("facts_sync: HTTP failed: %s", exc)
         return False, None
+    if r.status_code == 401:
+        # The server no longer recognizes this registration. Let the next
+        # sweep register again instead of trusting the process-lifetime cache.
+        _client_registered.pop(f"{base_url}|{client_id}", None)
     if r.status_code >= 300:
         logger.warning("facts_sync: %s returned %s: %s", url, r.status_code, r.text[:200])
         return False, None
