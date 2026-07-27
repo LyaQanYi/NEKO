@@ -98,18 +98,9 @@ async def get_system_client_id(response: Response):
     _set_no_store_headers(response)
     try:
         config_manager = _get_system_config_manager()
-        state_path = config_manager.cloudsave_local_state_path
-        needs_persist = not state_path.exists()
-        state = config_manager.load_cloudsave_local_state()
-        client_id = state.get("client_id") if isinstance(state, dict) else None
-        if not isinstance(client_id, str) or not client_id:
-            state = config_manager.build_default_cloudsave_local_state()
-            client_id = state.get("client_id")
-            needs_persist = True
+        client_id, _client_proof = config_manager.ensure_cloudsave_client_credentials()
         if not isinstance(client_id, str) or not client_id:
             raise ValueError("cloudsave state did not provide a client_id")
-        if needs_persist and isinstance(state, dict):
-            config_manager.save_cloudsave_local_state(state)
         return {"ok": True, "client_id": client_id}
     except Exception as exc:
         logger.warning("system client-id endpoint failed: %s", exc)

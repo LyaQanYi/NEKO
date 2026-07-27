@@ -71,15 +71,7 @@ def _build_client(config_manager):
 @pytest.mark.unit
 def test_system_client_id_fails_closed_when_fresh_id_cannot_be_persisted(tmp_path):
     class _UnsavableClientIdConfigManager(_DummyConfigManager):
-        cloudsave_local_state_path = tmp_path / "state" / "cloudsave_local_state.json"
-
-        def load_cloudsave_local_state(self):
-            return {"client_id": "volatile-client-id"}
-
-        def build_default_cloudsave_local_state(self):
-            raise AssertionError("loaded default already contains a client_id")
-
-        def save_cloudsave_local_state(self, _state):
+        def ensure_cloudsave_client_credentials(self):
             raise OSError("disk unavailable")
 
     with _build_client(_UnsavableClientIdConfigManager(tmp_path)) as client:
@@ -94,17 +86,13 @@ def test_system_client_id_fails_closed_when_fresh_id_cannot_be_persisted(tmp_pat
 @pytest.mark.unit
 def test_system_client_id_persists_fresh_identity_before_returning(tmp_path):
     class _FreshClientIdConfigManager(_DummyConfigManager):
-        cloudsave_local_state_path = tmp_path / "state" / "cloudsave_local_state.json"
-
         def __init__(self, root):
             super().__init__(root)
-            self.saved_states = []
+            self.ensure_calls = 0
 
-        def load_cloudsave_local_state(self):
-            return {"client_id": "fresh-client-id"}
-
-        def save_cloudsave_local_state(self, state):
-            self.saved_states.append(state)
+        def ensure_cloudsave_client_credentials(self):
+            self.ensure_calls += 1
+            return "fresh-client-id", "p" * 43
 
     config_manager = _FreshClientIdConfigManager(tmp_path)
     with _build_client(config_manager) as client:
@@ -112,7 +100,7 @@ def test_system_client_id_persists_fresh_identity_before_returning(tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "client_id": "fresh-client-id"}
-    assert config_manager.saved_states == [{"client_id": "fresh-client-id"}]
+    assert config_manager.ensure_calls == 1
     assert "no-store" in response.headers["Cache-Control"]
 
 
