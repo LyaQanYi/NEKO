@@ -46,21 +46,18 @@ def test_global_language_still_prefers_steam_over_system_locale(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("locale", "language_marker"),
-    [
-        ("zh-CN", "简体中文"),
-        ("zh-TW", "繁體中文"),
-        ("en-US", "English"),
-        ("ja-JP", "日本語"),
-        ("ko-KR", "한국어"),
-        ("ru-RU", "русском языке"),
-        ("es-ES", "español"),
-        ("pt-BR", "português"),
-    ],
+    "locale",
+    ["zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR", "ru-RU", "es-ES", "pt-BR"],
 )
-def test_fact_extraction_prompts_pin_text_output_language(locale, language_marker):
+def test_fact_extraction_prompts_resolve_per_locale(locale):
     for getter in (get_fact_extraction_prompt, get_fact_extraction_ai_aware_prompt):
         prompt = getter(locale)
-        assert language_marker in prompt
-        assert "`text`" in prompt
+        assert '"text"' in prompt
         assert "======以上为对话======" in prompt
+
+
+def test_zh_tw_fact_extraction_reuses_zh_template_body():
+    # zh-TW has no dedicated template and must resolve to the zh body verbatim,
+    # with nothing prepended that would make the two diverge.
+    assert get_fact_extraction_prompt("zh-TW") == get_fact_extraction_prompt("zh")
+    assert get_fact_extraction_ai_aware_prompt("zh-TW") == get_fact_extraction_ai_aware_prompt("zh")
