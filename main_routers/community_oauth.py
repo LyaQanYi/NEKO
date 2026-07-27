@@ -39,6 +39,7 @@ _DEFAULT_DESKTOP_CLIENT_ID = "neko-servers-desktop-dev"
 _DEFAULT_AUTH_URL = "https://auth.project-neko.cn"
 _HTTP_TIMEOUT_SEC = 30.0
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
+_oauth_start_lock = asyncio.Lock()
 
 _CALLBACK_PAGE = """<!doctype html>
 <html lang="zh-CN">
@@ -476,33 +477,60 @@ async def oauth_start_endpoint(request: Request):
         raise HTTPException(status_code=400, detail="auth_url_not_configured")
 
     client_id = _desktop_client_id()
-    state = secrets.token_urlsafe(32)
-    code_verifier = secrets.token_urlsafe(64)
-    code_challenge = _pkce_s256_challenge(code_verifier)
-    expires_at = time.time() + _OAUTH_PENDING_TTL_SEC
     redirect_uri = _oauth_redirect_uri(request)
     pending_path = await asyncio.to_thread(_oauth_pending_path)
     if pending_path is None:
         raise HTTPException(status_code=503, detail="oauth_pending_unavailable")
 
-    try:
-        await asyncio.to_thread(
-            C._write_private_json,
-            pending_path,
-            {
-                "state": state,
-                "code_verifier": code_verifier,
-                "redirect_uri": redirect_uri,
-                "client_id": client_id,
-                "auth_public_url": auth_url_base,
-                "created_at": time.time(),
-                "expires_at": expires_at,
-            },
-        )
-    except OSError as exc:
-        logger.warning("community_oauth: failed to persist pending: %s", exc)
-        raise HTTPException(status_code=503, detail="oauth_pending_unavailable") from exc
+    reused_pending = False
+    async with _oauth_start_lock:
+        now = time.time()
+        pending = await asyncio.to_thread(C._read_json_dict, pending_path)
+        try:
+            pending_expires_at = float((pending or {}).get("expires_at") or 0)
+        except (TypeError, ValueError):
+            pending_expires_at = 0.0
+        pending_state = str((pending or {}).get("state") or "")
+        pending_verifier = str((pending or {}).get("code_verifier") or "")
+        if (
+            pending_expires_at > now
+            and pending_state
+            and pending_verifier
+            and str((pending or {}).get("redirect_uri") or "") == redirect_uri
+            and str((pending or {}).get("client_id") or "") == client_id
+            and str((pending or {}).get("auth_public_url") or "").rstrip("/")
+            == auth_url_base
+        ):
+            state = pending_state
+            code_verifier = pending_verifier
+            expires_at = pending_expires_at
+            reused_pending = True
+        else:
+            state = secrets.token_urlsafe(32)
+            code_verifier = secrets.token_urlsafe(64)
+            expires_at = now + _OAUTH_PENDING_TTL_SEC
+            try:
+                await asyncio.to_thread(
+                    C._write_private_json,
+                    pending_path,
+                    {
+                        "state": state,
+                        "code_verifier": code_verifier,
+                        "redirect_uri": redirect_uri,
+                        "client_id": client_id,
+                        "auth_public_url": auth_url_base,
+                        "created_at": now,
+                        "expires_at": expires_at,
+                    },
+                )
+            except OSError as exc:
+                logger.warning("community_oauth: failed to persist pending: %s", exc)
+                raise HTTPException(
+                    status_code=503,
+                    detail="oauth_pending_unavailable",
+                ) from exc
 
+    code_challenge = _pkce_s256_challenge(code_verifier)
     query = urlencode(
         {
             "client_id": client_id,
@@ -518,7 +546,11 @@ async def oauth_start_endpoint(request: Request):
     return {
         "auth_url": auth_url,
         "state": state,
-        "expires_in": _OAUTH_PENDING_TTL_SEC,
+        "expires_in": (
+            max(1, int(expires_at - time.time()))
+            if reused_pending
+            else _OAUTH_PENDING_TTL_SEC
+        ),
     }
 
 

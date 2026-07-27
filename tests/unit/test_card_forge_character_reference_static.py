@@ -67,3 +67,18 @@ def test_card_forge_character_reference_http_failures_remain_retryable():
     assert "if (!response.ok)" in post_block
     assert "response.status" in post_block
     assert "return false;" in post_block
+
+
+@pytest.mark.unit
+def test_character_reference_pending_capture_is_bound_to_its_cache_key():
+    source = _read(APP_CHAT_AVATAR_PATH)
+    capture_block = source.split("function captureCharacterReferenceDataUrl()", 1)[1].split(
+        "/**\n     * 把当前头像",
+        1,
+    )[0]
+
+    assert "let pendingCharacterReferenceCacheKey = '';" in source
+    assert "pendingCharacterReferenceCacheKey === cacheKey" in capture_block
+    assert "getCharacterReferenceCacheKey() !== cacheKey" in capture_block
+    assert "pendingCharacterReference === capturePromise" in capture_block
+    assert "pendingCharacterReferenceCacheKey = cacheKey;" in capture_block

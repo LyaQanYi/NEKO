@@ -75,6 +75,22 @@ def test_oauth_start_returns_desktop_pkce_auth_url(oauth_app):
 
 
 @pytest.mark.unit
+def test_oauth_start_reuses_live_pending_pkce_attempt(oauth_app):
+    client, _auth, _social, pending = oauth_app
+
+    first = client.post("/api/card-drop/oauth/start")
+    pending_before = pending.read_text(encoding="utf-8")
+    second = client.post("/api/card-drop/oauth/start")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["state"] == first.json()["state"]
+    assert second.json()["auth_url"] == first.json()["auth_url"]
+    assert 0 < second.json()["expires_in"] <= O._OAUTH_PENDING_TTL_SEC
+    assert pending.read_text(encoding="utf-8") == pending_before
+
+
+@pytest.mark.unit
 async def test_oauth_start_offloads_pending_write(tmp_path, monkeypatch):
     pending = tmp_path / "community_oauth_pending.json"
     worker_threads: list[int] = []

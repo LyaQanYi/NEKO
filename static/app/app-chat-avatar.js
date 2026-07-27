@@ -15,6 +15,7 @@
     let cachedPreview = null;
     let cachedCharacterReference = null;
     let pendingCharacterReference = null;
+    let pendingCharacterReferenceCacheKey = '';
     let characterReferenceRetryTimer = null;
     let characterReferenceRetryAttempts = 0;
     let characterReferenceRetryCacheKey = '';
@@ -584,9 +585,14 @@
         ) {
             return Promise.resolve(cachedCharacterReference.dataUrl);
         }
-        if (pendingCharacterReference) return pendingCharacterReference;
+        if (
+            pendingCharacterReference &&
+            pendingCharacterReferenceCacheKey === cacheKey
+        ) {
+            return pendingCharacterReference;
+        }
 
-        pendingCharacterReference = Promise.resolve()
+        var capturePromise = Promise.resolve()
             .then(function () {
                 if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
                     return window.avatarPortrait.capture(CHARACTER_REFERENCE_CAPTURE_OPTIONS);
@@ -602,6 +608,7 @@
                 return null;
             })
             .then(function (result) {
+                if (getCharacterReferenceCacheKey() !== cacheKey) return '';
                 return rememberCharacterReferenceResult(result, cacheKey);
             })
             .catch(function (err) {
@@ -609,9 +616,14 @@
                 return '';
             })
             .finally(function () {
-                pendingCharacterReference = null;
+                if (pendingCharacterReference === capturePromise) {
+                    pendingCharacterReference = null;
+                    pendingCharacterReferenceCacheKey = '';
+                }
             });
-        return pendingCharacterReference;
+        pendingCharacterReference = capturePromise;
+        pendingCharacterReferenceCacheKey = cacheKey;
+        return capturePromise;
     }
 
     /**
