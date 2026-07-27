@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 function validPort(value) {
   const port = Number(String(value ?? '').trim())
@@ -44,4 +45,14 @@ export function resolveConfiguredPort(
     // Missing or malformed desktop config falls back to the source default.
   }
   return defaultPort
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const portName = process.argv[2]
+  const defaultPort = validPort(process.argv[3])
+  if (!portName || defaultPort === null) {
+    process.exitCode = 2
+  } else {
+    process.stdout.write(`${resolveConfiguredPort(portName, defaultPort)}\n`)
+  }
 }

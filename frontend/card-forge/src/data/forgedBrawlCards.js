@@ -123,9 +123,17 @@ export function createForgedBrawlCard(event = {}, options = {}) {
 
 export function normalizeForgedBrawlCard(card) {
   if (!card || typeof card !== 'object') return null
-  const base = BRAWL_CARD_EFFECT_POOL.find(item => item.code === card.baseCode)
+  const matchedBase = BRAWL_CARD_EFFECT_POOL.find(item => item.code === card.baseCode)
     || BRAWL_CARD_EFFECT_POOL.find(item => item.code === card.code)
-    || BRAWL_CARD_EFFECT_POOL[0]
+  const fallbackBase = BRAWL_CARD_EFFECT_POOL[0]
+  const base = matchedBase || fallbackBase
+  const canonicalOrCardValue = (field) => (
+    matchedBase?.[field] ?? card[field] ?? fallbackBase[field]
+  )
+  const attrId = canonicalOrCardValue('attrId')
+  const attrName = matchedBase
+    ? attrNameById(attrId)
+    : (card.attrName ?? attrNameById(attrId))
   const comboAttrId = BRAWL_ATTRS.some(attr => attr.id === card.comboAttrId)
     ? card.comboAttrId
     : pickRandom(BRAWL_ATTRS).id
@@ -133,7 +141,7 @@ export function normalizeForgedBrawlCard(card) {
   const storyLead = card.storyLead || card.factText || card.text || card.eventLead || card.summary || ''
   const hasGeneratedStory = typeof card.story === 'string' ? Boolean(card.story.trim()) : Boolean(card.story)
   const hasFactSource = Boolean(card.sourceFactId || card.factId || card.sourceFactHash || card.factHash)
-  const story = composeForgedCardStory(storyLead, card.story, base)
+  const story = composeForgedCardStory(storyLead, card.story, { ...base, attrName })
 
   return {
     ...card,
@@ -143,16 +151,16 @@ export function normalizeForgedBrawlCard(card) {
     forged: true,
     name: card.name || `${base.name}(Forged)`,
     title: card.title || card.name || `${base.name}(Forged)`,
-    attrId: base.attrId,
-    attrName: attrNameById(base.attrId),
+    attrId,
+    attrName,
     comboAttrId,
     comboAttrName: attrNameById(comboAttrId),
-    cost: base.cost,
-    type: base.type,
-    mainText: base.mainText,
-    comboText: base.comboText,
-    main: normalizeEffect(base.main),
-    combo: normalizeEffect(base.combo),
+    cost: canonicalOrCardValue('cost'),
+    type: canonicalOrCardValue('type'),
+    mainText: canonicalOrCardValue('mainText'),
+    comboText: canonicalOrCardValue('comboText'),
+    main: normalizeEffect(canonicalOrCardValue('main')),
+    combo: normalizeEffect(canonicalOrCardValue('combo')),
     story,
     summary: card.summary || story,
     storyLead,

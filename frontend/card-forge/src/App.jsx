@@ -9,6 +9,7 @@ import {
   normalizeCachedCloudCard,
   saveForgedBrawlCards,
 } from './data/forgedBrawlCards'
+import { selectRecentForgeFactExclusions } from './data/forgeFactExclusions'
 
 const FORGE_RARITY_TABLE = [
   { name: '普通', weight: 40, tagStyle: 'border-gray-400/30 bg-gray-500/10 text-gray-200', frame: 'border-gray-400/30 shadow-gray-900/10' },
@@ -331,13 +332,12 @@ export default function App() {
     // 的卡牌 (用户切换过猫娘),把它们一并 exclude 会让本猫娘的可用 fact 池被错误地缩水。
     // 没有 sourceCharacter 字段的旧卡 (历史 / 临时) 当作"属于任意猫娘",保留 exclude
     // 以维持向后兼容。
-    const inventoryForActiveCharacter = inventoryCards.filter(card => (
-      !card.sourceCharacter || card.sourceCharacter === activeCharacterName
-    ))
-    const usedFactIds = inventoryForActiveCharacter.map(card => card.sourceFactId).filter(Boolean)
-    const usedFactHashes = inventoryForActiveCharacter.map(card => card.sourceFactHash).filter(Boolean)
-    if (usedFactIds.length > 0) qs.set('exclude_fact_ids', Array.from(new Set(usedFactIds)).join(','))
-    if (usedFactHashes.length > 0) qs.set('exclude_hashes', Array.from(new Set(usedFactHashes)).join(','))
+    const { factIds, factHashes } = selectRecentForgeFactExclusions(
+      inventoryCards,
+      activeCharacterName,
+    )
+    if (factIds.length > 0) qs.set('exclude_fact_ids', factIds.join(','))
+    if (factHashes.length > 0) qs.set('exclude_hashes', factHashes.join(','))
     try {
       const res = await fetch(`/forge/facts?${qs.toString()}`)
       if (!res.ok) throw new Error('forge-facts http')

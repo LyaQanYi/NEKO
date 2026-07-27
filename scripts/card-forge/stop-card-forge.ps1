@@ -36,8 +36,8 @@ $cardForgePort = ConvertTo-ValidPort -Value $env:NEKO_CARD_FORGE_PORT
 if ($null -eq $cardForgePort) { $cardForgePort = 3001 }
 $ports = @($mainServerPort, $cardForgePort, 5173) | Select-Object -Unique
 $windowTitles = @(
-  "N.E.K.O Main Server - 48911",
-  "Neko Card Forge Server - 3001",
+  ("N.E.K.O Main Server - {0}" -f $mainServerPort),
+  ("Neko Card Forge Server - {0}" -f $cardForgePort),
   "Neko Card Forge Frontend - 5173"
 )
 

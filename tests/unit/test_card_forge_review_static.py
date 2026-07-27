@@ -15,6 +15,7 @@ def _read(relative_path: str) -> str:
 
 def test_card_forge_polling_and_interactions_are_lifecycle_safe_and_keyboard_accessible():
     source = _read("frontend/card-forge/src/App.jsx")
+    modal_source = _read("frontend/card-forge/src/components/CardInspectModal.jsx")
 
     assert source.count("let requestVersion = 0") == 2
     assert "if (!cancelled && version === requestVersion) setCloudInventory(cards)" in source
@@ -27,6 +28,10 @@ def test_card_forge_polling_and_interactions_are_lifecycle_safe_and_keyboard_acc
     assert source.count('role="button"') >= 2
     assert source.count("event.key === 'Enter' || event.key === ' '") >= 2
     assert "aria-pressed={isPicked}" in source
+    assert 'role="dialog"' in modal_source
+    assert 'aria-modal="true"' in modal_source
+    assert "dialog?.focus()" in modal_source
+    assert "previousFocus.focus?.()" in modal_source
 
 
 def test_mobile_avatar_layout_keeps_screen_share_control_for_every_renderer():
@@ -48,12 +53,17 @@ def test_mobile_avatar_layout_keeps_screen_share_control_for_every_renderer():
 
 def test_stop_script_resolves_runtime_ports_before_terminating_processes():
     source = _read("scripts/card-forge/stop-card-forge.ps1")
+    start_source = _read("scripts/card-forge/start-card-forge.bat")
 
     assert "$env:NEKO_MAIN_SERVER_PORT" in source
     assert "$env:MAIN_SERVER_PORT" in source
     assert '"N.E.K.O\\port_config.json"' in source
     assert "$env:NEKO_CARD_FORGE_PORT" in source
     assert "$ports = @($mainServerPort, $cardForgePort, 5173)" in source
+    assert '("N.E.K.O Main Server - {0}" -f $mainServerPort)' in source
+    assert '("Neko Card Forge Server - {0}" -f $cardForgePort)' in source
+    assert "N.E.K.O Main Server - %MAIN_SERVER_PORT_VALUE%" in start_source
+    assert "Neko Card Forge Server - %CARD_FORGE_PORT_VALUE%" in start_source
     authorization_pattern = (
         r"(?i)(Authorization\s*[:=]\s*(?:[A-Za-z][A-Za-z0-9_-]*\s+)?)\S+"
     )

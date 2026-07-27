@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { BookHeart, Sparkles, X } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 
@@ -22,19 +22,55 @@ function getCost(card) {
 }
 
 export default function CardInspectModal({ card, open, onClose, source = 'card' }) {
+  const dialogRef = useRef(null)
+  const onCloseRef = useRef(onClose)
   const AttrIcon = card?.attr?.icon || Sparkles
   const ComboIcon = card?.comboAttr?.icon || AttrIcon
   const story = card?.story || (card?.forged ? card?.summary : '预设卡牌暂无故事')
   const storyLead = card?.storyLead || card?.factText || card?.eventLead || ''
 
   useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
+
+  useEffect(() => {
     if (!open) return undefined
+    const previousFocus = document.activeElement
+    const dialog = dialogRef.current
+    dialog?.focus()
+
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') onClose?.()
+      if (event.key === 'Escape') {
+        onCloseRef.current?.()
+        return
+      }
+      if (event.key !== 'Tab' || !dialog) return
+
+      const focusable = Array.from(dialog.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ))
+      if (focusable.length === 0) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [open, onClose])
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      if (previousFocus && document.contains(previousFocus)) previousFocus.focus?.()
+    }
+  }, [open])
 
   return (
     <AnimatePresence>
@@ -48,6 +84,11 @@ export default function CardInspectModal({ card, open, onClose, source = 'card' 
           onClick={onClose}
         >
           <motion.article
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={card.name || '卡牌鉴赏'}
+            tabIndex={-1}
             className="grid max-h-full w-full max-w-3xl grid-cols-1 overflow-hidden rounded-sm border-2 border-neutral-950 bg-white text-neutral-950 shadow-2xl md:grid-cols-[260px_minmax(0,1fr)]"
             initial={{ opacity: 0, y: 28, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}

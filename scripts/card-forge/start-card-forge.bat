@@ -26,19 +26,26 @@ if not exist "%FRONTEND_ROOT%\package.json" (
   exit /b 1
 )
 
+set "MAIN_SERVER_PORT_VALUE=48911"
+set "CARD_FORGE_PORT_VALUE=3001"
+for /f "usebackq delims=" %%P in (`node "%FRONTEND_ROOT%\port-config.js" MAIN_SERVER_PORT 48911`) do set "MAIN_SERVER_PORT_VALUE=%%P"
+for /f "usebackq delims=" %%P in (`node "%FRONTEND_ROOT%\port-config.js" CARD_FORGE_PORT 3001`) do set "CARD_FORGE_PORT_VALUE=%%P"
+set "NEKO_MAIN_SERVER_PORT=%MAIN_SERVER_PORT_VALUE%"
+set "NEKO_CARD_FORGE_PORT=%CARD_FORGE_PORT_VALUE%"
+
 echo ====================================================
 echo   Neko Card Forge - One Click Startup
 echo ====================================================
 echo Project root: "%PROJECT_ROOT%"
 echo.
 
-echo [1/3] Opening N.E.K.O main server window (port 48911)...
-start "N.E.K.O Main Server - 48911" "%ComSpec%" /k "cd /d ""%PROJECT_ROOT%"" && uv run .\launcher.py"
+echo [1/3] Opening N.E.K.O main server window (port %MAIN_SERVER_PORT_VALUE%)...
+start "N.E.K.O Main Server - %MAIN_SERVER_PORT_VALUE%" "%ComSpec%" /k "cd /d ""%PROJECT_ROOT%"" && uv run .\launcher.py"
 
 timeout /t 3 /nobreak >nul
 
-echo [2/3] Opening card forge server window (port 3001)...
-start "Neko Card Forge Server - 3001" "%ComSpec%" /k "cd /d ""%FORGE_SERVER_ROOT%"" && uv run server.py"
+echo [2/3] Opening card forge server window (port %CARD_FORGE_PORT_VALUE%)...
+start "Neko Card Forge Server - %CARD_FORGE_PORT_VALUE%" "%ComSpec%" /k "cd /d ""%FORGE_SERVER_ROOT%"" && uv run server.py"
 
 timeout /t 2 /nobreak >nul
 
@@ -51,8 +58,8 @@ echo   Startup commands have been sent to 3 windows.
 echo ====================================================
 echo URLs:
 echo   card-forge:   http://127.0.0.1:5173
-echo   N.E.K.O main: http://localhost:48911
-echo   Forge server: http://localhost:3001/health
+echo   N.E.K.O main: http://localhost:%MAIN_SERVER_PORT_VALUE%
+echo   Forge server: http://localhost:%CARD_FORGE_PORT_VALUE%/health
 echo.
 echo Keep the three opened command windows running while testing.
 echo To stop these services later, run:
