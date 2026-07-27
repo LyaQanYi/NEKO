@@ -52,6 +52,19 @@ def test_resolve_configured_port_matches_environment_and_desktop_precedence(tmp_
     ) == 3001
 
 
+def test_resolve_configured_port_falls_back_for_non_utf8_config(tmp_path):
+    launcher = _load_launcher()
+    config_path = tmp_path / "port_config.json"
+    config_path.write_bytes(b"\xff\xfe\x00")
+
+    assert launcher.resolve_configured_port(
+        "CARD_FORGE_PORT",
+        3001,
+        environment={},
+        config_path=config_path,
+    ) == 3001
+
+
 def test_main_passes_resolved_ports_to_every_child(monkeypatch):
     launcher = _load_launcher()
     launched = []

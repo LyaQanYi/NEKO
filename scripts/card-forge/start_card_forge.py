@@ -90,7 +90,7 @@ def resolve_configured_port(
         )
         if port is not None:
             return port
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         pass
     return default_port
 
