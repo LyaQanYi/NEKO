@@ -73,6 +73,14 @@ def test_load_cached_cards_returns_safe_newest_records(tmp_path, monkeypatch) ->
     assert puller.load_cached_cards() == [{"id": "card-1", "title": "Cloud card"}]
 
 
+def test_card_cache_file_stem_is_platform_independent_and_collision_safe() -> None:
+    assert puller._card_cache_file_stem("good-card") == "good-card"
+    assert puller._card_cache_file_stem("a:shared") == "a%3Ashared"
+    assert puller._card_cache_file_stem("b:shared") == "b%3Ashared"
+    assert puller._card_cache_file_stem("../shared") == "%2E%2E%2Fshared"
+    assert puller._card_cache_file_stem("CON") == "%43ON"
+
+
 @pytest.mark.asyncio
 async def test_pull_skips_invalid_path_components_without_aborting_batch(
     tmp_path,
@@ -96,6 +104,8 @@ async def test_pull_skips_invalid_path_components_without_aborting_batch(
                 {"id": "bad-1", "lanlan_name": ""},
                 {"id": "bad-2", "lanlan_name": "."},
                 {"id": "bad\u0000", "lanlan_name": "Lanlan"},
+                {"id": "a:shared", "lanlan_name": "Lanlan", "title": "A"},
+                {"id": "b:shared", "lanlan_name": "Lanlan", "title": "B"},
                 {"id": "good-card", "lanlan_name": "Lanlan", "title": "Good"},
             ]
 
@@ -117,7 +127,17 @@ async def test_pull_skips_invalid_path_components_without_aborting_batch(
     monkeypatch.setattr(puller, "get_config_manager", lambda: manager)
     monkeypatch.setattr(puller.httpx, "AsyncClient", FakeAsyncClient)
 
-    assert await puller._pull_once() == 1
+    assert await puller._pull_once() == 3
+    assert json.loads(
+        (memory_dir / "Lanlan" / "cards" / "a%3Ashared.json").read_text(
+            encoding="utf-8"
+        )
+    )["id"] == "a:shared"
+    assert json.loads(
+        (memory_dir / "Lanlan" / "cards" / "b%3Ashared.json").read_text(
+            encoding="utf-8"
+        )
+    )["id"] == "b:shared"
     assert json.loads(
         (memory_dir / "Lanlan" / "cards" / "good-card.json").read_text(
             encoding="utf-8"

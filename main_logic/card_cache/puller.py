@@ -13,12 +13,14 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -31,6 +33,12 @@ HTTP_TIMEOUT_SEC = 15.0
 MAX_CARDS_PER_PULL = 100
 MAX_CACHED_CARDS = 500
 STARTUP_DELAY_SEC = 60.0
+MAX_CARD_CACHE_FILE_STEM_LENGTH = 180
+WINDOWS_RESERVED_FILE_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
 
 
 def _enabled() -> bool:
@@ -68,6 +76,27 @@ def _write_json_atomic(path: Path, data: Any) -> None:
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     tmp.replace(path)
+
+
+def _card_cache_file_stem(card_id: str) -> str | None:
+    """Encode a cloud card ID into one cross-platform, collision-safe file stem."""
+    if not card_id or any(ord(char) < 32 or ord(char) == 127 for char in card_id):
+        return None
+    try:
+        # Percent-encode separators, colons, Windows-invalid characters and Unicode.
+        # urllib keeps "." unescaped as an RFC-unreserved character, so encode it
+        # explicitly to avoid dot segments and trailing-dot normalization on Windows.
+        encoded = quote(card_id, safe="-_~").replace(".", "%2E")
+    except (UnicodeEncodeError, ValueError):
+        return None
+    if not encoded:
+        return None
+    if encoded.upper() in WINDOWS_RESERVED_FILE_STEMS:
+        encoded = f"%{ord(encoded[0]):02X}{encoded[1:]}"
+    if len(encoded) > MAX_CARD_CACHE_FILE_STEM_LENGTH:
+        digest = hashlib.sha256(card_id.encode("utf-8")).hexdigest()[:16]
+        encoded = f"{encoded[:160]}-{digest}"
+    return encoded
 
 
 def load_cached_cards() -> list[dict[str, Any]]:
@@ -156,12 +185,10 @@ async def _pull_once() -> int:
         ).strip(". ")
         if not safe_lanlan:
             continue
-        # card_id 来自云端：Path(...).name 去掉任意目录分隔符与 ..，杜绝写到 cards/ 目录外。
-        try:
-            safe_card_id = Path(card_id).name
-        except (OSError, RuntimeError, ValueError):
-            continue
-        if not safe_card_id or safe_card_id.startswith("."):
+        # card_id 来自云端：使用固定的 percent-encoding，避免平台相关的 Path.name
+        # 在 Windows 把 a:shared / b:shared 都折叠为 shared 并静默漏卡。
+        safe_card_id = _card_cache_file_stem(card_id)
+        if not safe_card_id:
             continue
         path = memory_dir / safe_lanlan / "cards" / f"{safe_card_id}.json"
         # 兜底：解析后必须仍在 memory_dir 之下（防任何残留穿越）

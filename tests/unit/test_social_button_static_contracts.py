@@ -1,3 +1,4 @@
+import re
 import struct
 from pathlib import Path
 
@@ -28,7 +29,9 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert listener.index("if (shouldIgnoreSocialOpenRequest()) {") < listener.index(
         "fetch('/api/system/social/config')"
     )
-    assert listener.index("finally {") < listener.index("releaseSocialOpenRequest();")
+    assert "let socialOpenRequestReleased = false;" in listener
+    assert listener.count("releaseSocialOpenRequest();") == 2
+    assert "if (!socialOpenRequestReleased)" in listener
     # Community opens in-app (Electron framed child / browser tab); OAuth may still use openExternal.
     assert "window.open(url, 'neko-social')" in listener
     assert listener.index("releaseSocialOpenRequest();") > listener.index("window.open(url, 'neko-social')")
@@ -73,8 +76,10 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     assert listener.count("window.open('about:blank', '_blank')") == 1
     assert "currentPopup.opener = null;" in listener
     assert "currentPopup.location.replace(targetUrl);" in listener
-    assert "if (!options.keepReference || !navigated)" in listener
+    assert "if (navigated && !options.keepReference)" in listener
     assert "const waitForBrowserOAuthCompletion = async (timeoutMs) => {" in listener
+    assert "let pollDelayMs = 1000;" in listener
+    assert "Math.min(Math.ceil(pollDelayMs * 1.5), 5000)" in listener
     assert "fetch('/api/card-drop/oauth/status', { cache: 'no-store' })" in listener
     assert "navigateBrowserPopup(authUrl, { keepReference: true })" in listener
     assert "await waitForBrowserOAuthCompletion(browserOAuthTimeoutMs)" in listener
@@ -85,6 +90,14 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         "navigateBrowserPopup(authUrl, { keepReference: true })"
     )
     assert listener.index("navigateBrowserPopup(authUrl, { keepReference: true })") < listener.index(
+        "await waitForBrowserOAuthCompletion(browserOAuthTimeoutMs)"
+    )
+    assert re.search(
+        r"else if \(!navigateBrowserPopup\(authUrl, \{ keepReference: true \}\)\) \{\s*"
+        r"closePopup\(\);",
+        listener,
+    )
+    assert listener.index("releaseSocialOpenRequest();") < listener.index(
         "await waitForBrowserOAuthCompletion(browserOAuthTimeoutMs)"
     )
     assert listener.index("await waitForBrowserOAuthCompletion(browserOAuthTimeoutMs)") < listener.index(

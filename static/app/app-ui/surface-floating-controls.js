@@ -215,6 +215,7 @@
                 return;
             }
             const isElectron = !!(window.electronShell && typeof window.electronShell.openExternal === 'function');
+            let socialOpenRequestReleased = false;
             let popupRef = null;
             const closePopup = () => {
                 if (!popupRef) {
@@ -246,13 +247,14 @@
                     }
                 }
                 try { currentPopup.focus && currentPopup.focus(); } catch (_) { /* ignore */ }
-                if (!options.keepReference || !navigated) {
+                if (navigated && !options.keepReference) {
                     popupRef = null;
                 }
                 return navigated;
             };
             const waitForBrowserOAuthCompletion = async (timeoutMs) => {
                 const deadline = Date.now() + timeoutMs;
+                let pollDelayMs = 1000;
                 while (popupRef && Date.now() < deadline) {
                     try {
                         if (popupRef.closed) {
@@ -260,7 +262,15 @@
                             return false;
                         }
                     } catch (_) { /* ignore */ }
-                    await new Promise((resolve) => setTimeout(resolve, 1000));
+                    const remainingMs = deadline - Date.now();
+                    if (remainingMs <= 0) {
+                        return false;
+                    }
+                    await new Promise((resolve) => setTimeout(
+                        resolve,
+                        Math.min(pollDelayMs, remainingMs)
+                    ));
+                    pollDelayMs = Math.min(Math.ceil(pollDelayMs * 1.5), 5000);
                     try {
                         const statusRes = await fetch('/api/card-drop/oauth/status', { cache: 'no-store' });
                         if (statusRes.ok) {
@@ -378,6 +388,7 @@
                 if (!communityLoggedIn) {
                     let browserOAuthStarted = false;
                     let browserOAuthTimeoutMs = 10 * 60 * 1000;
+                    let oauthLaunched = false;
                     try {
                         const oauthRes = await fetch('/api/card-drop/oauth/start', {
                             method: 'POST',
@@ -391,7 +402,9 @@
                             if (authUrl) {
                                 if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
                                     await window.electronShell.openExternal(authUrl);
+                                    oauthLaunched = true;
                                 } else if (!navigateBrowserPopup(authUrl, { keepReference: true })) {
+                                    closePopup();
                                     if (typeof window.showStatusToast === 'function') {
                                         window.showStatusToast(
                                             (window.t && window.t('app.socialOpenFailed', { error: 'OAuth popup blocked' }))
@@ -400,6 +413,7 @@
                                         );
                                     }
                                 } else {
+                                    oauthLaunched = true;
                                     browserOAuthStarted = true;
                                     const expiresInSec = Number(oauthJson && oauthJson.expires_in);
                                     if (Number.isFinite(expiresInSec) && expiresInSec > 0) {
@@ -409,7 +423,7 @@
                                         );
                                     }
                                 }
-                                if (typeof window.showStatusToast === 'function') {
+                                if (oauthLaunched && typeof window.showStatusToast === 'function') {
                                     const oauthPromptKey = 'app.socialOAuthPrompt';
                                     const oauthPrompt = (typeof window.t === 'function')
                                         ? window.t(oauthPromptKey)
@@ -428,6 +442,8 @@
                     } finally {
                         if (!isElectron && popupRef) {
                             if (browserOAuthStarted) {
+                                releaseSocialOpenRequest();
+                                socialOpenRequestReleased = true;
                                 const oauthCompleted = await waitForBrowserOAuthCompletion(browserOAuthTimeoutMs);
                                 if (oauthCompleted && popupRef) {
                                     const refreshedTargetUrl = await attachNativeSyncTicket(
@@ -455,7 +471,9 @@
                     );
                 }
             } finally {
-                releaseSocialOpenRequest();
+                if (!socialOpenRequestReleased) {
+                    releaseSocialOpenRequest();
+                }
             }
         });
 
