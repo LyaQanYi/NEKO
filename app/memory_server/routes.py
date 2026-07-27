@@ -45,7 +45,6 @@ from utils.language_utils import (
     is_supported_language_code,
     language_context,
     normalize_language_code,
-    refresh_global_language,
 )
 from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
@@ -65,9 +64,8 @@ class HistoryRequest(BaseModel):
 
 
 def _activate_request_language(language: str | None) -> str:
-    """Apply main_server's Steam/system locale and return a replay-safe full code."""
+    """Select a replay-safe request locale without changing the process default."""
     if is_supported_language_code(language):
-        refresh_global_language(str(language))
         return normalize_language_code(language, format='full')
     return get_global_language_full()
 

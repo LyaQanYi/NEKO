@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 import platform
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Mapping
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -17,7 +20,13 @@ def ps_quote(path: Path) -> str:
     return "'" + str(path).replace("'", "''") + "'"
 
 
-def launch_window(title: str, cwd: Path, command: str) -> None:
+def launch_window(
+    title: str,
+    cwd: Path,
+    command: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> None:
     safe_title = title.replace("'", "''")
     ps_command = (
         f"$Host.UI.RawUI.WindowTitle = '{safe_title}'; "
@@ -27,12 +36,63 @@ def launch_window(title: str, cwd: Path, command: str) -> None:
     subprocess.Popen(
         ["powershell.exe", "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_command],
         creationflags=subprocess.CREATE_NEW_CONSOLE,
+        env=dict(env) if env is not None else None,
     )
 
 
 def ensure_path(path: Path, label: str) -> None:
     if not path.exists():
         raise FileNotFoundError(f"{label} not found: {path}")
+
+
+def _valid_port(value: object) -> int | None:
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return port if 1 <= port <= 65535 else None
+
+
+def _port_config_path(environment: Mapping[str, str]) -> Path:
+    home = Path.home()
+    system = platform.system()
+    if system == "Windows":
+        base = Path(environment.get("APPDATA") or home / "AppData" / "Roaming")
+    elif system == "Darwin":
+        base = home / "Library" / "Application Support"
+    else:
+        base = Path(environment.get("XDG_CONFIG_HOME") or home / ".config")
+    return base / "N.E.K.O" / "port_config.json"
+
+
+def resolve_configured_port(
+    port_name: str,
+    default_port: int,
+    *,
+    environment: Mapping[str, str] | None = None,
+    config_path: Path | None = None,
+) -> int:
+    """Match the desktop port precedence used by config.network and Vite."""
+    selected_environment = os.environ if environment is None else environment
+    for key in (f"NEKO_{port_name}", port_name):
+        port = _valid_port(selected_environment.get(key))
+        if port is not None:
+            return port
+
+    try:
+        payload = json.loads(
+            (config_path or _port_config_path(selected_environment)).read_text(
+                encoding="utf-8"
+            )
+        )
+        port = _valid_port(
+            payload.get(port_name) if isinstance(payload, dict) else None
+        )
+        if port is not None:
+            return port
+    except (OSError, json.JSONDecodeError):
+        pass
+    return default_port
 
 
 # 这个一键启动脚本目前只支持 Windows：依赖 powershell.exe / CREATE_NEW_CONSOLE
@@ -63,26 +123,34 @@ def main() -> int:
     ensure_path(FORGE_SERVER_ROOT / "server.py", "Card forge server")
     ensure_path(FRONTEND_ROOT / "package.json", "Card forge frontend")
 
+    main_server_port = resolve_configured_port("MAIN_SERVER_PORT", 48911)
+    card_forge_port = resolve_configured_port("CARD_FORGE_PORT", 3001)
+    child_env = os.environ.copy()
+    child_env["NEKO_MAIN_SERVER_PORT"] = str(main_server_port)
+    child_env["NEKO_CARD_FORGE_PORT"] = str(card_forge_port)
+
     print("=" * 52)
     print("   Neko Card Forge - One Click Startup")
     print("=" * 52)
     print(f"Project root: {PROJECT_ROOT}")
     print()
 
-    print("[1/3] Opening N.E.K.O main server window (port 48911)...")
+    print(f"[1/3] Opening N.E.K.O main server window (port {main_server_port})...")
     launch_window(
-        "N.E.K.O Main Server - 48911",
+        f"N.E.K.O Main Server - {main_server_port}",
         PROJECT_ROOT,
         "uv run .\\launcher.py",
+        env=child_env,
     )
 
     time.sleep(3)
 
-    print("[2/3] Opening card forge server window (port 3001)...")
+    print(f"[2/3] Opening card forge server window (port {card_forge_port})...")
     launch_window(
-        "Neko Card Forge Server - 3001",
+        f"Neko Card Forge Server - {card_forge_port}",
         FORGE_SERVER_ROOT,
         "uv run server.py",
+        env=child_env,
     )
 
     time.sleep(2)
@@ -92,6 +160,7 @@ def main() -> int:
         "Neko Card Forge Frontend - 5173",
         FRONTEND_ROOT,
         "npm run dev",
+        env=child_env,
     )
 
     print()
@@ -100,8 +169,8 @@ def main() -> int:
     print("=" * 52)
     print("URLs:")
     print("  card-forge:   http://localhost:5173")
-    print("  N.E.K.O main: http://localhost:48911")
-    print("  Forge server: http://localhost:3001/health")
+    print(f"  N.E.K.O main: http://localhost:{main_server_port}")
+    print(f"  Forge server: http://localhost:{card_forge_port}/health")
     print()
     print("Keep the three opened command windows running while testing.")
     print("Press Enter to close this launcher window...")

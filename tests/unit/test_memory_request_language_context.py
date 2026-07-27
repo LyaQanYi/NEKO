@@ -9,10 +9,21 @@ from unittest.mock import AsyncMock
 import pytest
 
 import app.memory_server.routes as routes
+from utils import language_utils
 from utils.language_utils import get_global_language_full
 
 
 pytestmark = pytest.mark.unit
+
+
+def test_request_language_selection_does_not_mutate_process_default(monkeypatch):
+    monkeypatch.setattr(language_utils, "_global_language", "zh")
+    monkeypatch.setattr(language_utils, "_global_language_full", "zh-TW")
+    monkeypatch.setattr(language_utils, "_global_language_initialized", True)
+
+    assert routes._activate_request_language("ja") == "ja"
+    assert get_global_language_full() == "zh-TW"
+    assert routes._activate_request_language("not-a-locale") == "zh-TW"
 
 
 @pytest.mark.asyncio
