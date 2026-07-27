@@ -76,9 +76,39 @@ def test_character_reference_pending_capture_is_bound_to_its_cache_key():
         "/**\n     * 把当前头像",
         1,
     )[0]
+    matching_pending_guard = (
+        "if (\n"
+        "            pendingCharacterReference &&\n"
+        "            pendingCharacterReferenceCacheKey === cacheKey\n"
+        "        ) {\n"
+        "            return pendingCharacterReference;\n"
+        "        }"
+    )
+    stale_result_guard = (
+        ".then(function (result) {\n"
+        "                if (getCharacterReferenceCacheKey() !== cacheKey) return '';\n"
+        "                return rememberCharacterReferenceResult(result, cacheKey);\n"
+        "            })"
+    )
+    pending_capture_binding = (
+        ".finally(function () {\n"
+        "                if (pendingCharacterReference === capturePromise) {\n"
+        "                    pendingCharacterReference = null;\n"
+        "                    pendingCharacterReferenceCacheKey = '';\n"
+        "                }\n"
+        "            });\n"
+        "        pendingCharacterReference = capturePromise;\n"
+        "        pendingCharacterReferenceCacheKey = cacheKey;\n"
+        "        return capturePromise;"
+    )
 
     assert "let pendingCharacterReferenceCacheKey = '';" in source
-    assert "pendingCharacterReferenceCacheKey === cacheKey" in capture_block
-    assert "getCharacterReferenceCacheKey() !== cacheKey" in capture_block
-    assert "pendingCharacterReference === capturePromise" in capture_block
-    assert "pendingCharacterReferenceCacheKey = cacheKey;" in capture_block
+    assert matching_pending_guard in capture_block
+    assert stale_result_guard in capture_block
+    assert pending_capture_binding in capture_block
+    assert capture_block.index(matching_pending_guard) < capture_block.index(
+        "var capturePromise = Promise.resolve()"
+    )
+    assert capture_block.index(stale_result_guard) < capture_block.index(
+        pending_capture_binding
+    )
