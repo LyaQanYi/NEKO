@@ -21,7 +21,7 @@ N.E.K.O/
 ├── frontend/
 │   ├── react-neko-chat/      # Shared React chat implementation
 │   ├── plugin-manager/       # Vue plugin-manager UI
-│   └── card-forge/           # React memory-forge UI
+│   └── card-forge/           # Local development-only React memory-forge UI
 ├── static/                   # Runtime assets and eight JSON locales
 ├── templates/                # Main/chat/subtitle/settings/feature pages
 ├── docker/                   # Dockerfiles, Compose, entrypoint

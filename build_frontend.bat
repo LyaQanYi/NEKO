@@ -2,7 +2,7 @@
 setlocal
 chcp 65001 >nul 2>&1
 
-rem Build all frontend projects.
+rem Build frontend projects shipped with production distributions.
 set "ROOT_DIR=%~dp0"
 if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
 
@@ -104,37 +104,6 @@ if not exist "%RC_DIST%\neko-chat-window.iife.js" (
 )
 echo [build_frontend] react-neko-chat done: %RC_DIST%
 
-rem --- 3. Card Forge (React) ---
-set "CF_DIR=%ROOT_DIR%\frontend\card-forge"
-set "CF_DIST=%CF_DIR%\dist"
-
-if not exist "%CF_DIR%" (
-  echo [build_frontend] card-forge dir not found: %CF_DIR%
-  exit /b 1
-)
-
-echo [build_frontend] building card-forge...
-pushd "%CF_DIR%" >nul
-call npm ci
-if errorlevel 1 (
-  popd >nul
-  echo [build_frontend] npm ci failed for card-forge
-  exit /b 1
-)
-call npm run build
-if errorlevel 1 (
-  popd >nul
-  echo [build_frontend] build failed for card-forge
-  exit /b 1
-)
-popd >nul
-
-if not exist "%CF_DIST%\index.html" (
-  echo [build_frontend] card-forge build output missing: %CF_DIST%\index.html
-  exit /b 1
-)
-echo [build_frontend] card-forge done: %CF_DIST%
-
 echo.
-echo [build_frontend] all frontend projects built successfully.
+echo [build_frontend] all production frontend projects built successfully.
 exit /b 0

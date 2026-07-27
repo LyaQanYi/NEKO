@@ -17,7 +17,7 @@ N.E.K.O/
 ├── frontend/
 │   ├── react-neko-chat/     # 唯一真实聊天 UI
 │   ├── plugin-manager/      # Vue UI
-│   └── card-forge/          # 奇遇铸造机 React UI
+│   └── card-forge/          # 仅本地开发使用的奇遇铸造机 React UI
 ├── static/                  # 运行时资源与 8 个 locale
 ├── templates/               # main/chat/subtitle/settings/features
 ├── docker/                  # Docker/Compose/entrypoint

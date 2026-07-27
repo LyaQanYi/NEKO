@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build all frontend projects.
+# Build frontend projects shipped with production distributions.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,27 +76,5 @@ if [ ! -f "$RC_DIST/neko-chat-window.iife.js" ]; then
 fi
 echo "[build_frontend] react-neko-chat done: $RC_DIST"
 
-# --- 3. Card Forge (React) ---
-CF_DIR="$SCRIPT_DIR/frontend/card-forge"
-CF_DIST="$CF_DIR/dist"
-
-if [ ! -d "$CF_DIR" ]; then
-  echo "[build_frontend] card-forge dir not found: $CF_DIR" >&2
-  exit 1
-fi
-
-echo "[build_frontend] building card-forge..."
-(
-  cd "$CF_DIR"
-  npm ci
-  npm run build
-)
-
-if [ ! -f "$CF_DIST/index.html" ]; then
-  echo "[build_frontend] card-forge build output missing: $CF_DIST/index.html" >&2
-  exit 1
-fi
-echo "[build_frontend] card-forge done: $CF_DIST"
-
 echo ""
-echo "[build_frontend] all frontend projects built successfully."
+echo "[build_frontend] all production frontend projects built successfully."
