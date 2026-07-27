@@ -6,7 +6,7 @@ function forgedAtTimestamp(card) {
   return Number.isFinite(timestamp) ? timestamp : 0
 }
 
-function boundedUniqueValues(cards, field) {
+function boundedUniqueValues(cards, field, queryParameterName) {
   const values = []
   const seen = new Set()
 
@@ -15,7 +15,10 @@ function boundedUniqueValues(cards, field) {
     if (!value || seen.has(value)) continue
 
     const candidate = [...values, value].join(',')
-    if (encodeURIComponent(candidate).length > MAX_EXCLUDE_PARAM_ENCODED_CHARS) {
+    const serializedLength = new URLSearchParams([
+      [queryParameterName, candidate],
+    ]).toString().length
+    if (serializedLength > MAX_EXCLUDE_PARAM_ENCODED_CHARS) {
       continue
     }
 
@@ -33,7 +36,7 @@ export function selectRecentForgeFactExclusions(inventoryCards, activeCharacterN
     .slice(0, MAX_EXCLUDE_CARDS)
 
   return {
-    factIds: boundedUniqueValues(recentCards, 'sourceFactId'),
-    factHashes: boundedUniqueValues(recentCards, 'sourceFactHash'),
+    factIds: boundedUniqueValues(recentCards, 'sourceFactId', 'exclude_fact_ids'),
+    factHashes: boundedUniqueValues(recentCards, 'sourceFactHash', 'exclude_hashes'),
   }
 }

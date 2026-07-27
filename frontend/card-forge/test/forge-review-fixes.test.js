@@ -33,8 +33,33 @@ test('fact exclusions keep only the active character recent cards and stay URL-b
 
   assert.ok(bounded.factIds.length < MAX_EXCLUDE_CARDS)
   assert.ok(bounded.factHashes.length < MAX_EXCLUDE_CARDS)
-  assert.ok(encodeURIComponent(bounded.factIds.join(',')).length <= MAX_EXCLUDE_PARAM_ENCODED_CHARS)
-  assert.ok(encodeURIComponent(bounded.factHashes.join(',')).length <= MAX_EXCLUDE_PARAM_ENCODED_CHARS)
+  assert.ok(
+    new URLSearchParams({ exclude_fact_ids: bounded.factIds.join(',') }).toString().length
+      <= MAX_EXCLUDE_PARAM_ENCODED_CHARS,
+  )
+  assert.ok(
+    new URLSearchParams({ exclude_hashes: bounded.factHashes.join(',') }).toString().length
+      <= MAX_EXCLUDE_PARAM_ENCODED_CHARS,
+  )
+})
+
+test('fact exclusion budgets use URLSearchParams encoding for special characters', () => {
+  const special = "!'()~"
+  const inventory = Array.from({ length: MAX_EXCLUDE_CARDS }, (_, index) => ({
+    sourceCharacter: 'active-neko',
+    sourceFactId: `${special.repeat(20)}-${index}`,
+    sourceFactHash: `${special.repeat(20)}-${index}`,
+    forgedAt: index,
+  }))
+
+  const { factIds, factHashes } = selectRecentForgeFactExclusions(inventory, 'active-neko')
+  const encodedIds = new URLSearchParams({ exclude_fact_ids: factIds.join(',') }).toString()
+  const encodedHashes = new URLSearchParams({ exclude_hashes: factHashes.join(',') }).toString()
+
+  assert.ok(factIds.length < MAX_EXCLUDE_CARDS)
+  assert.ok(factHashes.length < MAX_EXCLUDE_CARDS)
+  assert.ok(encodedIds.length <= MAX_EXCLUDE_PARAM_ENCODED_CHARS)
+  assert.ok(encodedHashes.length <= MAX_EXCLUDE_PARAM_ENCODED_CHARS)
 })
 
 test('unknown cloud base codes preserve the cloud card gameplay fields', () => {
