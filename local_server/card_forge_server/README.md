@@ -16,6 +16,8 @@ uv run local_server/card_forge_server/server.py
 
 > 仍依赖 `httpx`（可选 HTTP facts 源）；N.E.K.O 根目录的 `.venv` 中通常已带。
 
+Windows 上要一次拉起「主服务 + 铸造机服务 + `frontend/card-forge` 前端」三个窗口，用 `scripts/card-forge/start-card-forge.bat`，停止用同目录的 `stop-card-forge.bat`。前端生产构建走根目录的 `build_frontend.bat` / `build_frontend.sh`。
+
 ## 接口
 
 | 方法 | 路径 | 说明 |

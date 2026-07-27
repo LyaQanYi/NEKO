@@ -1,10 +1,9 @@
 @echo off
 setlocal
 
-set "PROJECT_ROOT=%~dp0"
-if "%PROJECT_ROOT:~-1%"=="\" set "PROJECT_ROOT=%PROJECT_ROOT:~0,-1%"
+for %%I in ("%~dp0..\..") do set "PROJECT_ROOT=%%~fI"
 set "FORGE_SERVER_ROOT=%PROJECT_ROOT%\local_server\card_forge_server"
-set "FRONTEND_ROOT=%PROJECT_ROOT%\card-forge"
+set "FRONTEND_ROOT=%PROJECT_ROOT%\frontend\card-forge"
 
 if not exist "%PROJECT_ROOT%\launcher.py" (
   echo [startup error] N.E.K.O launcher not found:
@@ -57,5 +56,5 @@ echo   Forge server: http://localhost:3001/health
 echo.
 echo Keep the three opened command windows running while testing.
 echo To stop these services later, run:
-echo   "%PROJECT_ROOT%\stop-card-forge.bat"
+echo   "%~dp0stop-card-forge.bat"
 pause

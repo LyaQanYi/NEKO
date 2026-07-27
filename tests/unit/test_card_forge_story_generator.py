@@ -73,9 +73,9 @@ async def test_generate_story_preserves_configured_provider_type(monkeypatch):
 
 @pytest.mark.unit
 def test_frontend_timeout_covers_both_backend_story_targets():
-    source = (PROJECT_ROOT / "card-forge" / "src" / "App.jsx").read_text(
-        encoding="utf-8"
-    )
+    source = (
+        PROJECT_ROOT / "frontend" / "card-forge" / "src" / "App.jsx"
+    ).read_text(encoding="utf-8")
     match = re.search(
         r"const FORGE_STORY_FETCH_TIMEOUT_MS = ([\d_]+)",
         source,

@@ -7,9 +7,9 @@ import time
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FORGE_SERVER_ROOT = PROJECT_ROOT / "local_server" / "card_forge_server"
-FRONTEND_ROOT = PROJECT_ROOT / "card-forge"
+FRONTEND_ROOT = PROJECT_ROOT / "frontend" / "card-forge"
 
 
 def ps_quote(path: Path) -> str:

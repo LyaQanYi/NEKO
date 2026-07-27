@@ -161,7 +161,11 @@ def test_main_active_character_read_cors_remains_social_origin_only(monkeypatch)
 
 def test_forge_frontend_clears_runtime_hint_when_active_character_sync_fails():
     source = (
-        Path(__file__).resolve().parents[2] / "card-forge" / "src" / "App.jsx"
+        Path(__file__).resolve().parents[2]
+        / "frontend"
+        / "card-forge"
+        / "src"
+        / "App.jsx"
     ).read_text(encoding="utf-8")
     fetch_block = source.split("async function fetchActiveCharacter() {", 1)[1].split(
         "    fetchActiveCharacter()", 1

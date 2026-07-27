@@ -16,6 +16,7 @@ N.E.K.O/
 ├── utils/config_manager/    # writable config/storage
 ├── frontend/react-neko-chat/
 ├── frontend/plugin-manager/
+├── frontend/card-forge/
 ├── static/                  # runtime assets/eight locales
 ├── templates/
 ├── docker/

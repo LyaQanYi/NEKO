@@ -14,7 +14,7 @@ def _read(relative_path: str) -> str:
 
 
 def test_card_forge_polling_and_interactions_are_lifecycle_safe_and_keyboard_accessible():
-    source = _read("card-forge/src/App.jsx")
+    source = _read("frontend/card-forge/src/App.jsx")
 
     assert source.count("let requestVersion = 0") == 2
     assert "if (!cancelled && version === requestVersion) setCloudInventory(cards)" in source
@@ -47,7 +47,7 @@ def test_mobile_avatar_layout_keeps_screen_share_control_for_every_renderer():
 
 
 def test_stop_script_resolves_runtime_ports_before_terminating_processes():
-    source = _read("stop-card-forge.ps1")
+    source = _read("scripts/card-forge/stop-card-forge.ps1")
 
     assert "$env:NEKO_MAIN_SERVER_PORT" in source
     assert "$env:MAIN_SERVER_PORT" in source
