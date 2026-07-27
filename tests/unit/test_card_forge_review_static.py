@@ -1,4 +1,3 @@
-import re
 from pathlib import Path
 
 import pytest
@@ -74,15 +73,13 @@ def test_stop_script_resolves_runtime_ports_before_terminating_processes():
     assert '("Neko Card Forge Server - {0}" -f $cardForgePort)' in source
     assert "N.E.K.O Main Server - %MAIN_SERVER_PORT_VALUE%" in start_source
     assert "Neko Card Forge Server - %CARD_FORGE_PORT_VALUE%" in start_source
-    authorization_pattern = (
-        r"(?i)(Authorization\s*[:=]\s*(?:[A-Za-z][A-Za-z0-9_-]*\s+)?)\S+"
-    )
-    assert authorization_pattern in source
-
-    command_line = "tool.exe --header Authorization: Basic dXNlcjpwYXNz --safe"
-    redacted = re.sub(authorization_pattern, r"\1<redacted>", command_line)
-    assert "dXNlcjpwYXNz" not in redacted
-    assert "Authorization: Basic <redacted>" in redacted
+    assert "function Get-CardForgeProcessIds" in source
+    assert "$owned.Contains([int]$proc.ParentProcessId)" in source
+    assert "$ownedProcessIds.Contains([int]$processId)" in source
+    assert "$cardForgePatterns" not in source
+    assert "Get-SafeCommandPreview" not in source
+    assert "CommandLine" not in source
+    assert source.count("Write-Verbose") >= 3
 
 
 def test_live2d_click_actions_are_not_dispatched_by_the_generic_listener_twice():

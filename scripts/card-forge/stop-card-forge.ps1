@@ -26,7 +26,7 @@ function Get-DesktopMainServerPort {
     $port = ConvertTo-ValidPort -Value $config.MAIN_SERVER_PORT
     if ($null -ne $port) { return $port }
   } catch {
-    # Missing/malformed desktop config falls back to the source default.
+    Write-Verbose ("Could not read main-server port config at {0}: {1}" -f $configPath, $_.Exception.Message)
   }
   return 48911
 }
@@ -48,7 +48,7 @@ function Get-DesktopCardForgePort {
     $port = ConvertTo-ValidPort -Value $config.CARD_FORGE_PORT
     if ($null -ne $port) { return $port }
   } catch {
-    # Missing/malformed desktop config falls back to the source default.
+    Write-Verbose ("Could not read Card Forge port config at {0}: {1}" -f $configPath, $_.Exception.Message)
   }
   return 3001
 }
@@ -62,54 +62,37 @@ $windowTitles = @(
   "Neko Card Forge Frontend - 5173"
 )
 
-# Only kill processes whose command line matches a card-forge launcher signature,
-# so an unrelated app that happens to be listening on 48911/3001/5173 (e.g.
-# another developer's Vite project on 5173) isn't taken down with us.
-$cardForgePatterns = @(
-  'launcher\.py',
-  'card_forge_server',
-  'card-forge'
-)
+function Get-CardForgeProcessIds {
+  param([System.Diagnostics.Process[]]$LauncherProcesses)
 
-function Get-ProcessCommandLine {
-  param([int]$ProcId)
+  $owned = [System.Collections.Generic.HashSet[int]]::new()
+  foreach ($proc in $LauncherProcesses) {
+    [void]$owned.Add([int]$proc.Id)
+  }
   try {
-    return (Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$ProcId" -ErrorAction Stop).CommandLine
+    $snapshot = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
   } catch {
-    return ""
+    Write-Verbose ("Could not inspect Card Forge process tree: {0}" -f $_.Exception.Message)
+    return ,$owned
   }
+
+  do {
+    $added = $false
+    foreach ($proc in $snapshot) {
+      if ($owned.Contains([int]$proc.ParentProcessId) -and $owned.Add([int]$proc.ProcessId)) {
+        $added = $true
+      }
+    }
+  } while ($added)
+
+  return ,$owned
 }
 
-function Test-CardForgeProcess {
-  param([string]$CommandLine)
-  if (-not $CommandLine) { return $false }
-  foreach ($pattern in $cardForgePatterns) {
-    if ($CommandLine -match $pattern) { return $true }
-  }
-  return $false
-}
-
-# 不能在 [skip] 日志里写出被跳过进程的完整 CommandLine —— 那是别人家的进程,
-# 参数里可能含 API token、--password=*、私密文件路径等。
-# 两步处理:先用正则把常见敏感参数替换成 <redacted>,再截到 60 字符。
-# 截短前先脱敏,否则敏感值落在前 60 字内仍会进日志。
-$sensitiveParamPatterns = @(
-  '(?i)(--?(?:token|password|secret|api[-_]?key|access[-_]?key|auth)\s*[=: ]\s*)\S+',
-  '(?i)(Bearer\s+)\S+',
-  '(?i)(Authorization\s*[:=]\s*(?:[A-Za-z][A-Za-z0-9_-]*\s+)?)\S+'
+$windowProcesses = @(
+  Get-Process cmd,powershell -ErrorAction SilentlyContinue |
+    Where-Object { $windowTitles -contains $_.MainWindowTitle }
 )
-
-function Get-SafeCommandPreview {
-  param([string]$CommandLine, [int]$MaxLength = 60)
-  if (-not $CommandLine) { return "(unknown)" }
-  $sanitized = $CommandLine
-  foreach ($pattern in $sensitiveParamPatterns) {
-    $sanitized = [regex]::Replace($sanitized, $pattern, '${1}<redacted>')
-  }
-  $trimmed = $sanitized.Trim()
-  if ($trimmed.Length -le $MaxLength) { return $trimmed }
-  return $trimmed.Substring(0, $MaxLength) + "…"
-}
+$ownedProcessIds = Get-CardForgeProcessIds -LauncherProcesses $windowProcesses
 
 foreach ($port in $ports) {
   $connections = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue
@@ -120,10 +103,8 @@ foreach ($port in $ports) {
 
   $processIds = $connections | Select-Object -ExpandProperty OwningProcess -Unique
   foreach ($processId in $processIds) {
-    $cmdLine = Get-ProcessCommandLine -ProcId $processId
-    if (-not (Test-CardForgeProcess -CommandLine $cmdLine)) {
-      $preview = Get-SafeCommandPreview -CommandLine $cmdLine
-      Write-Host ("[skip] Port {0} PID {1} does not look like a card-forge process; leaving it alone. Preview: {2}" -f $port, $processId, $preview)
+    if (-not $ownedProcessIds.Contains([int]$processId)) {
+      Write-Host ("[skip] Port {0} PID {1} is not owned by a Card Forge launch window; leaving it alone." -f $port, $processId)
       continue
     }
     try {
@@ -137,9 +118,6 @@ foreach ($port in $ports) {
 }
 
 Start-Sleep -Milliseconds 500
-
-$windowProcesses = Get-Process cmd,powershell -ErrorAction SilentlyContinue |
-  Where-Object { $windowTitles -contains $_.MainWindowTitle }
 
 foreach ($proc in $windowProcesses) {
   try {
