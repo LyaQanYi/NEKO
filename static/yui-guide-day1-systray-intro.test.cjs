@@ -60,7 +60,10 @@ function getCssRuleBlock(source, selector) {
 test('Day1 tutorial end schedules the system tray intro for complete, skip and angry exit paths', () => {
   const onTutorialEndBlock = getMethodBlock(universalManagerSource, 'onTutorialEnd');
 
-  assert.match(onTutorialEndBlock, /const day1SystrayIntroPromise = this\.scheduleDay1SystrayIntroAfterTeardown\(/);
+  assert.match(onTutorialEndBlock, /const scheduledDay1SystrayIntroPromise = this\.scheduleDay1SystrayIntroAfterTeardown\(/);
+  assert.match(onTutorialEndBlock, /const day1SystrayIntroPromise = Promise\.all\(\[/);
+  assert.match(onTutorialEndBlock, /scheduledDay1SystrayIntroPromise/);
+  assert.match(onTutorialEndBlock, /stateFlushPromise/);
   assert.match(onTutorialEndBlock, /return day1SystrayIntroPromise;/);
   assert.match(onTutorialEndBlock, /endMeta\.rawReason/);
   assert.match(onTutorialEndBlock, /avatarFloatingEndState/);
@@ -133,7 +136,7 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
   assert.equal(zhCn.tutorial.systray.location.alt, '系统托盘位置示意图');
   assert.equal(zhCn.tutorial.systray.menu.title, '📋 托盘菜单');
   assert.equal(zhCn.tutorial.systray.resetPosition, '重置角色位置');
-  assert.match(i18nBootstrapSource, /LOCALE_VERSION = '2026-07-22-window-pin-controls-i18n'/);
+  assert.match(i18nBootstrapSource, /LOCALE_VERSION = '2026-07-27-merged-main-i18n'/);
 
   for (const [code, source] of Object.entries(localeSources)) {
     const locale = JSON.parse(source);
