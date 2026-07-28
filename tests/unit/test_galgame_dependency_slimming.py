@@ -18,6 +18,15 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 RAPIDOCR_PILLOW_ROOT = ROOT / "deps" / "rapidocr_pillow"
 
+# The fork's det post-processing imports pyclipper at module scope, and
+# pyclipper only arrives with the galgame group (`uv sync --group galgame`),
+# which plain dev installs and CI deliberately skip — it drags in ~130 MB of
+# opencv. Without this guard those tests do not fail informatively, they raise
+# ModuleNotFoundError, and they only ever passed on machines that happened to
+# have the group installed. The CI workflow installs the single ~260 KB
+# pyclipper wheel so the cohort still runs there; everywhere else it skips.
+_HAS_PYCLIPPER = importlib.util.find_spec("pyclipper") is not None
+
 
 def _rapidocr_modnames() -> list[str]:
     return [
@@ -67,29 +76,6 @@ def _load_verifier():
     sys.modules[spec.name] = verifier
     spec.loader.exec_module(verifier)
     return verifier
-
-
-def _require_galgame_ocr_import_deps() -> None:
-    # Unit CI uses plain `uv sync` (no --group galgame). Importing RapidOCR pulls
-    # pyclipper + onnxruntime via ch_ppocr_det / OrtInferSession; skip when absent.
-    pytest.importorskip("pyclipper")
-    pytest.importorskip("onnxruntime")
-
-
-def _load_pillow_cv():
-    # Load _pillow_cv by file path so we do not execute package __init__ (which
-    # imports RapidOCR → pyclipper/onnxruntime). Geometry helpers are pure numpy/PIL.
-    module_path = RAPIDOCR_PILLOW_ROOT / "rapidocr_onnxruntime" / "_pillow_cv.py"
-    spec = importlib.util.spec_from_file_location(
-        "rapidocr_onnxruntime_pillow_cv_under_test",
-        module_path,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _load_pyproject() -> dict:
@@ -161,17 +147,16 @@ def test_rapidocr_pillow_source_has_no_removed_dependency_imports() -> None:
     assert sorted(offenders) == []
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_pillow_cv_geometry_helpers_cover_shapely_and_perspective_replacements() -> None:
-    # _pillow_cv itself only needs scipy (galgame transitive); avoid package
-    # __init__ so missing pyclipper/onnxruntime does not block this helper suite.
-    pytest.importorskip("scipy")
-    pillow_cv = _load_pillow_cv()
-    dilate = pillow_cv.dilate
-    min_area_box = pillow_cv.min_area_box
-    perspective_transform_matrix = pillow_cv.perspective_transform_matrix
-    polygon_area = pillow_cv.polygon_area
-    polygon_perimeter = pillow_cv.polygon_perimeter
-    resize = pillow_cv.resize
+    from rapidocr_onnxruntime._pillow_cv import (
+        dilate,
+        min_area_box,
+        perspective_transform_matrix,
+        polygon_area,
+        polygon_perimeter,
+        resize,
+    )
 
     rect = np.array([[0, 0], [4, 0], [4, 3], [0, 3]], dtype=np.float32)
     assert polygon_area(rect) == pytest.approx(12.0)
@@ -381,8 +366,8 @@ def test_rapidocr_pillow_verifier_can_build_manifest_from_category_dirs() -> Non
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_rapidocr_pillow_preprocess_accumulates_resize_ratios() -> None:
-    _require_galgame_ocr_import_deps()
     from rapidocr_onnxruntime.main import RapidOCR
 
     engine = object.__new__(RapidOCR)
@@ -397,8 +382,8 @@ def test_rapidocr_pillow_preprocess_accumulates_resize_ratios() -> None:
     assert ratio_w == pytest.approx(8000 / 3968)
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_rapidocr_call_uses_per_call_thresholds_without_mutating_instance() -> None:
-    _require_galgame_ocr_import_deps()
     from rapidocr_onnxruntime.main import RapidOCR
 
     engine = object.__new__(RapidOCR)
@@ -433,8 +418,8 @@ def test_rapidocr_call_uses_per_call_thresholds_without_mutating_instance() -> N
     assert engine.text_score == 0.5
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_rapidocr_cli_visualization_handles_empty_and_det_only_results(monkeypatch, tmp_path) -> None:
-    _require_galgame_ocr_import_deps()
     from rapidocr_onnxruntime import main as rapidocr_main
 
     image_path = tmp_path / "sample.png"
@@ -500,6 +485,7 @@ def test_rapidocr_cli_visualization_handles_empty_and_det_only_results(monkeypat
     assert writes[-1][0] == tmp_path / "sample_vis.png"
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_rapidocr_pillow_read_yaml_uses_safe_loader(tmp_path) -> None:
     from rapidocr_onnxruntime.utils import read_yaml
 
@@ -513,6 +499,7 @@ def test_rapidocr_pillow_read_yaml_uses_safe_loader(tmp_path) -> None:
         read_yaml(unsafe_yaml)
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_rapidocr_pillow_rgba_conversion_uses_white_background_alpha_composite() -> None:
     from rapidocr_onnxruntime.utils import LoadImage
 
@@ -532,6 +519,7 @@ def test_rapidocr_pillow_rgba_conversion_uses_white_background_alpha_composite()
     assert np.array_equal(bgr[1, 1], np.array([199, 196, 194], dtype=np.uint8))
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_rapidocr_pillow_cli_list_args_parse_comma_separated_values(monkeypatch, tmp_path) -> None:
     from rapidocr_onnxruntime.utils.parse_parameters import init_args
 
@@ -560,6 +548,7 @@ def test_rapidocr_pillow_cli_list_args_parse_comma_separated_values(monkeypatch,
     assert args.rec_img_shape == [3, 48, 320]
 
 
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
 def test_rapidocr_pillow_update_parameters_strips_module_prefixes_consistently() -> None:
     from rapidocr_onnxruntime.utils.parse_parameters import UpdateParameters
 
@@ -577,3 +566,54 @@ def test_rapidocr_pillow_update_parameters_strips_module_prefixes_consistently()
     assert det_dict == {"box_thresh": 0.7, "use_dilation": False}
     assert cls_dict == {"batch_num": 8, "label_list": ["0", "180"]}
     assert rec_dict == {"batch_num": 12, "img_shape": [3, 48, 320]}
+
+
+def test_every_fork_importing_test_carries_the_dependency_guard():
+    """Any test importing the fork must be guarded, discovered not listed.
+
+    Importing any ``rapidocr_onnxruntime`` submodule runs the package
+    ``__init__``, which reaches pyclipper — so without the guard the test does
+    not skip on a plain ``uv sync``, it raises ModuleNotFoundError. Which tests
+    that actually hits is order-dependent: run the file top to bottom and a
+    failed first import leaves enough behind that later ones sail through, but
+    select a later one on its own and it explodes. A hand-kept list of guarded
+    tests would go stale the first time someone adds one, so the list is
+    derived from the AST instead.
+    """
+    import ast
+
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    def _imports_fork(fn: ast.FunctionDef) -> bool:
+        for node in ast.walk(fn):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "rapidocr_onnxruntime"
+            ):
+                return True
+            if isinstance(node, ast.Import):
+                if any(a.name.startswith("rapidocr_onnxruntime") for a in node.names):
+                    return True
+        return False
+
+    def _is_guarded(fn: ast.FunctionDef) -> bool:
+        for decorator in fn.decorator_list:
+            if "_HAS_PYCLIPPER" in (ast.get_source_segment(source, decorator) or ""):
+                return True
+        return False
+
+    importers, unguarded = [], []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
+            continue
+        if not _imports_fork(node):
+            continue
+        importers.append(node.name)
+        if not _is_guarded(node):
+            unguarded.append(f"{node.name} (line {node.lineno})")
+
+    assert len(importers) >= 8, f"发现到的 fork 导入用例太少，断言已失效: {importers}"
+    assert not unguarded, (
+        "这些用例导入了 rapidocr_onnxruntime 却没挂 _HAS_PYCLIPPER 守卫，"
+        f"干净环境下会抛 ModuleNotFoundError 而不是跳过: {unguarded}"
+    )
