@@ -410,6 +410,14 @@ async def test_confirm_cloud_forge_debit_retries_for_loopback_unregistered(monke
     assert call_log[0][0] == "post"
     assert call_log[1][0] == "ensure_registered"
     assert call_log[2][0] == "post"
+    assert call_log[0][2] == {
+        "client_id": "client-id",
+        "credit_id": "credit-id",
+        "card_id": "card-id",
+    }
+    assert call_log[1][1] == ("http://localhost:48911",)
+    assert call_log[1][2] == {"force": True}
+    assert call_log[2][2] == call_log[0][2]
 
 
 def test_packaged_facts_module_exposes_shared_entrypoints():
