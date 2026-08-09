@@ -330,10 +330,11 @@ async def _confirm_cloud_forge_debit(
 
     # A rejection naming an unknown client is usually this install's first cloud
     # call after the cloud lost (or never had) the row. Register, then retry once.
+    # Not gated on send_client_proof: loopback HTTP omits the proof from this
+    # request, yet ensure_client_registered() may still register over it, so
+    # gating here would leave loopback debits unconfirmed until a restart.
     detail = payload.get("detail") if isinstance(payload, dict) else None
-    if send_client_proof and client_registration.looks_unregistered(
-        response.status_code, detail
-    ):
+    if client_registration.looks_unregistered(response.status_code, detail):
         if await client_registration.ensure_client_registered(base_url, force=True):
             response, payload = await _post()
             if response is None:
