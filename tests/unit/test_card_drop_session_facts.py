@@ -1447,6 +1447,76 @@ def test_bind_client_approval_uses_persisted_local_id_and_consumes_ticket(
     assert replay.json() == {"detail": "invalid_sync_ticket"}
 
 
+def test_social_session_init_hands_desktop_oauth_to_community_origin(client, monkeypatch):
+    snapshot = {
+        **_delegate_session(),
+        "refresh_token": "desktop-refresh-a",
+        "auth_public_url": "https://auth.example",
+        "client_id": "neko-servers-desktop-dev",
+    }
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+    ticket = _issue_sync_ticket(client)
+
+    denied = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://evil.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert denied.status_code == 403
+    assert denied.json() == {"detail": "origin_not_allowed"}
+    assert C._sync_ticket_is_valid(ticket)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://community.example"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "access_token": "desktop-token-a",
+        "refresh_token": "desktop-refresh-a",
+        "local_user_id": USER_A_ID,
+        "auth_public_url": "https://auth.example",
+        "client_id": "neko-servers-desktop-dev",
+    }
+
+    replay = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert replay.status_code == 403
+    assert replay.json() == {"detail": "invalid_sync_ticket"}
+
+
+def test_social_session_init_requires_oauth_desktop_identity(client, monkeypatch):
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: None)
+    ticket = _issue_sync_ticket(client)
+    missing = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert missing.status_code == 409
+    assert missing.json() == {"detail": "desktop_login_required"}
+
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "auth_source": "legacy"},
+    )
+    legacy_ticket = _issue_sync_ticket(client)
+    legacy = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": legacy_ticket},
+    )
+    assert legacy.status_code == 409
+    assert legacy.json() == {"detail": "legacy_session_not_supported"}
+
+
 def test_bind_client_approval_rejects_origin_before_consuming_ticket(client, monkeypatch):
     ticket = _issue_sync_ticket(client)
     monkeypatch.setattr(

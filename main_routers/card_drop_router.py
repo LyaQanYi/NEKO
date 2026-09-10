@@ -1367,6 +1367,72 @@ async def native_delegate_handoff_endpoint(
     )
 
 
+@router.options("/social-session-init", summary="社区网页复用 Desktop 登录态预检")
+async def social_session_init_options(request: Request):
+    cors = _sync_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    return JSONResponse({"ok": True}, headers=cors)
+
+
+@router.post("/social-session-init", summary="一次性消费 native_sync ticket，交付 Desktop OAuth 会话")
+async def social_session_init_endpoint(request: Request, payload: dict = Body(...)):
+    """Hand the Desktop OAuth session to the community tab so it logs in once.
+
+    The community SPA (opened by NEKO with a ``#native_sync`` ticket) redeems
+    that one-time ticket here. In exchange it receives the Desktop
+    ``neko-servers-desktop-*`` access/refresh tokens, which N.E.K.O.Servers
+    already accepts (``AUTH_ALLOWED_DESKTOP_CLIENT_IDS``). The SPA then runs
+    its normal ``/api/auth/session/bootstrap`` and publishes the session, so no
+    second browser login is needed and both sides share one token family.
+
+    Direction is Python → SPA over the allowlisted community Origin only; the
+    Web tab never sends its own bearer to localhost. Ticket is single-use.
+    """
+    cors = _sync_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    sync_ticket = payload.get("sync_ticket") or payload.get("syncTicket")
+    if not _consume_sync_ticket(sync_ticket):
+        return JSONResponse(
+            {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
+        )
+    snapshot, failure = await _native_delegate_session_snapshot()
+    access_token = str((snapshot or {}).get("access_token") or "").strip()
+    local_user_id = str((snapshot or {}).get("local_user_id") or "").strip()
+    if not snapshot or not access_token or not local_user_id:
+        unavailable = failure in {"unavailable", "malformed"}
+        return JSONResponse(
+            {
+                "detail": (
+                    "identity_verification_unavailable"
+                    if unavailable
+                    else "desktop_login_required"
+                )
+            },
+            status_code=503 if unavailable else 409,
+            headers=cors,
+        )
+    if snapshot.get("auth_source") != "oauth":
+        return JSONResponse(
+            {"detail": "legacy_session_not_supported"}, status_code=409, headers=cors
+        )
+    from main_routers import community_oauth as _co
+
+    return JSONResponse(
+        {
+            "access_token": access_token,
+            "refresh_token": str(snapshot.get("refresh_token") or "").strip() or None,
+            "local_user_id": local_user_id,
+            "auth_public_url": str(
+                snapshot.get("auth_public_url") or _co._auth_public_url()
+            ).rstrip("/"),
+            "client_id": str(snapshot.get("client_id") or _co._desktop_client_id()),
+        },
+        headers={**cors, "Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
 @router.options("/sync-session", summary="社区网页登录态同步预检")
 async def sync_session_options(request: Request):
     cors = _sync_cors_headers(request)
