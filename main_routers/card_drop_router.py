@@ -1528,15 +1528,27 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
             # Persist it, or /auth-status keeps reporting the stale failure and
             # every later handoff repeats the bind.
             await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
-        # The bind retry is a cloud round trip; Desktop may have refreshed,
-        # logged out, or switched accounts while it ran. Shipping the captured
-        # bearer now could hand over a revoked token or the previous account's,
-        # and the ticket would be spent either way.
-        current = await asyncio.to_thread(_desktop_session_snapshot) or {}
-        if str(current.get("access_token") or "").strip() != access_token:
-            return JSONResponse(
-                {"detail": "desktop_login_required"}, status_code=409, headers=cors
-            )
+    # _load_auth 和 _oauth_guest_bind 都是 await 点，Desktop 登出、刷新、切号都可能
+    # 在这期间发生。原先只有 bind 重试分支复查，已绑定和 ownership-conflict 两条常见
+    # 路径直接消费 ticket 并下发 bearer。这里改成无条件复查：会话已变就返回 409，
+    # 既不下发凭据，也不消费 ticket（留给用户重试）。
+    #
+    # 注意这里没有对「复查 → 消费」加锁。Desktop 侧的写入在 _social_session_lock 下
+    # 提交，但复查必须走 _native_delegate_session_snapshot（异步 IPC，读的是 PC 进程
+    # 内存中的当前会话），没法放进同步锁作用域；换成读磁盘的 _desktop_session_snapshot
+    # 会和上面 1489 行的判定源不一致，PC 尚未落盘时会误判。所以复查和消费之间仍有一个
+    # 窄窗口 —— 它把「整段 await 期间」收敛到了「一次 IPC 往返」，但没有完全消除。
+    # 彻底消除需要 PC 侧提供带版本号的会话读取接口，属于跨仓库改动。
+    verification_snapshot, _ = await _native_delegate_session_snapshot()
+    verification_token = (
+        str(verification_snapshot.get("access_token") or "").strip()
+        if verification_snapshot
+        else ""
+    )
+    if verification_token != access_token:
+        return JSONResponse(
+            {"detail": "desktop_login_required"}, status_code=409, headers=cors
+        )
     if not _consume_sync_ticket(sync_ticket):
         return JSONResponse(
             {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
@@ -1546,9 +1558,15 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
             "access_token": access_token,
             "local_user_id": local_user_id,
             "auth_public_url": str(
-                snapshot.get("auth_public_url") or _co._auth_public_url()
+                snapshot.get("auth_public_url")
+                or auth.get("auth_public_url")
+                or _co._auth_public_url()
             ).rstrip("/"),
-            "client_id": str(snapshot.get("client_id") or _co._desktop_client_id()),
+            "client_id": str(
+                snapshot.get("client_id")
+                or auth.get("client_id")
+                or _co._desktop_client_id()
+            ),
             "bind": bind,
         },
         headers={**cors, "Cache-Control": "no-store", "Pragma": "no-cache"},

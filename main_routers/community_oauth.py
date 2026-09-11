@@ -494,29 +494,31 @@ def _persist_oauth_credentials(
     if auth_path is None or social_path is None:
         return False
 
-    snapshots: list[tuple[Path, bool, dict[str, Any] | None]] = []
-    try:
-        for path in (auth_path, social_path):
-            existed = path.exists()
-            payload = C._read_json_dict(path) if existed else None
-            if existed and payload is None:
-                logger.warning(
-                    "community_oauth: refusing to replace unreadable credential file: %s",
-                    path.name,
-                )
-                return False
-            snapshots.append((path, existed, payload))
-    except OSError as exc:
-        logger.warning("community_oauth: credential snapshot failed: %s", exc)
-        return False
-
-    auth_saved = False
-    social_saved = False
+    rollback_ok = True
     try:
         # Both credential files must move as one unit: a concurrent bind repair
         # or refresh holds this same lock, so without it the two records can be
-        # left describing different accounts.
+        # left describing different accounts. The rollback snapshots are read
+        # inside the same scope, or a refresh committing between the read and
+        # the lock would be rolled back onto an already-consumed refresh token.
         with C._social_session_lock(social_path):
+            snapshots: list[tuple[Path, bool, dict[str, Any] | None]] = []
+            try:
+                for path in (auth_path, social_path):
+                    existed = path.exists()
+                    payload = C._read_json_dict(path) if existed else None
+                    if existed and payload is None:
+                        logger.warning(
+                            "community_oauth: refusing to replace unreadable "
+                            "credential file: %s",
+                            path.name,
+                        )
+                        return False
+                    snapshots.append((path, existed, payload))
+            except OSError as exc:
+                logger.warning("community_oauth: credential snapshot failed: %s", exc)
+                return False
+
             auth_saved = C._save_auth_unlocked(auth_payload)
             social_saved = auth_saved and C._save_social_session_unlocked(
                 social_path,
@@ -531,7 +533,6 @@ def _persist_oauth_credentials(
             if auth_saved and social_saved:
                 return True
 
-            rollback_ok = True
             for path, existed, payload in snapshots:
                 if path == social_path and social_saved:
                     continue
@@ -547,36 +548,13 @@ def _persist_oauth_credentials(
                         path.name,
                         exc,
                     )
-            if not rollback_ok:
-                logger.warning(
-                    "community_oauth: credential files may be inconsistent after "
-                    "a failed save"
-                )
-            return False
     except (OSError, TimeoutError) as exc:
         logger.warning("community_oauth: credential persist failed: %s", exc)
         return False
 
-    rollback_ok = True
-    for path, existed, payload in snapshots:
-        # _save_social_session() either atomically replaced the social file and
-        # returned True, or left it untouched. Reaching rollback therefore
-        # means only community_auth.json may need restoration; rewriting the
-        # social snapshot here could overwrite a concurrent Desktop refresh.
-        if path == social_path:
-            continue
-        try:
-            if existed:
-                C._write_private_json(path, payload or {})
-            else:
-                path.unlink(missing_ok=True)
-        except OSError as exc:
-            rollback_ok = False
-            logger.warning(
-                "community_oauth: credential rollback failed for %s: %s",
-                path.name,
-                exc,
-            )
+    # A half-restored pair can pass a new auth record off as an active login.
+    # _clear_auth() takes the same non-reentrant lock, so it can only run once
+    # the scope above released it.
     if not rollback_ok and not C._clear_auth():
         logger.warning("community_oauth: failed to clear credentials after rollback failure")
     return False

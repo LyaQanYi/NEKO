@@ -1785,6 +1785,41 @@ def test_social_session_init_keeps_a_concurrent_refresh_when_persisting_bind(
     assert persisted["refresh_token"] == "desktop-refresh-new"
 
 
+def test_social_session_init_prefers_the_saved_issuer_over_process_defaults(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A social_session.json predating the issuer fields still has the auth mirror."""
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "auth_public_url": "https://auth.custom.example",
+                "client_id": "neko-servers-desktop-custom",
+                "bind": {"bound": True, "error": None},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    # The process defaults describe a different issuer than the handed-over token.
+    assert payload["auth_public_url"] == "https://auth.custom.example"
+    assert payload["client_id"] == "neko-servers-desktop-custom"
+
+
 def test_social_session_init_requires_oauth_desktop_identity(client, monkeypatch):
     monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: None)
     ticket = _issue_sync_ticket(client)

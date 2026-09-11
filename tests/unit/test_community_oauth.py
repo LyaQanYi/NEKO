@@ -8,6 +8,7 @@ import hashlib
 import json
 import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -971,6 +972,131 @@ async def test_oauth_callback_rolls_back_partial_credential_write(
     else:
         assert not auth.exists()
         assert not social.exists()
+
+
+@pytest.mark.unit
+def test_persist_oauth_credentials_rolls_back_the_tokens_seen_under_the_lock(
+    tmp_path,
+    monkeypatch,
+):
+    """A refresh committing before the lock owns the tokens; do not roll it back."""
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    auth.write_text(
+        json.dumps({"access_token": "old-access", "refresh_token": "old-refresh"}),
+        encoding="utf-8",
+    )
+    social.write_text(
+        json.dumps(
+            {
+                "token": "old-access",
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+                "local_user_id": USER_ID,
+                "auth_source": "oauth",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+
+    real_lock = C._social_session_lock
+
+    @contextmanager
+    def rotating_lock(path):
+        with real_lock(path):
+            auth.write_text(
+                json.dumps(
+                    {
+                        "access_token": "rotated-access",
+                        "refresh_token": "rotated-refresh",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            social.write_text(
+                json.dumps(
+                    {
+                        "token": "rotated-access",
+                        "access_token": "rotated-access",
+                        "refresh_token": "rotated-refresh",
+                        "local_user_id": USER_ID,
+                        "auth_source": "oauth",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            yield
+
+    monkeypatch.setattr(C, "_social_session_lock", rotating_lock)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", lambda *_args, **_kwargs: False)
+
+    saved = O._persist_oauth_credentials(
+        {"access_token": "new-access", "refresh_token": "new-refresh"},
+        social_base="https://community.example",
+        access_token="new-access",
+        refresh_token="new-refresh",
+        local_user_id=USER_ID,
+        auth_public_url="https://auth.example",
+        client_id="neko-servers-desktop-dev",
+    )
+
+    assert saved is False
+    # Restoring the pre-refresh snapshot would reinstate a consumed refresh
+    # token and the next refresh would die with invalid_grant.
+    assert json.loads(auth.read_text(encoding="utf-8"))["refresh_token"] == "rotated-refresh"
+    assert json.loads(social.read_text(encoding="utf-8"))["refresh_token"] == "rotated-refresh"
+
+
+@pytest.mark.unit
+def test_persist_oauth_credentials_clears_credentials_when_rollback_fails(
+    tmp_path,
+    monkeypatch,
+):
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    old_auth = {"access_token": "old-access", "refresh_token": "old-refresh"}
+    auth.write_text(json.dumps(old_auth), encoding="utf-8")
+    social.write_text(
+        json.dumps(
+            {
+                "token": "old-access",
+                "access_token": "old-access",
+                "local_user_id": USER_ID,
+                "auth_source": "oauth",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+
+    real_write = C._write_private_json
+
+    def write_private_json(path, data):
+        if path == auth and data == old_auth:
+            raise OSError("restore failed")
+        real_write(path, data)
+
+    monkeypatch.setattr(C, "_write_private_json", write_private_json)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", lambda *_args, **_kwargs: False)
+
+    saved = O._persist_oauth_credentials(
+        {"access_token": "new-access", "refresh_token": "new-refresh"},
+        social_base="https://community.example",
+        access_token="new-access",
+        refresh_token="new-refresh",
+        local_user_id=USER_ID,
+        auth_public_url="https://auth.example",
+        client_id="neko-servers-desktop-dev",
+    )
+
+    assert saved is False
+    # A new auth record left beside the old session reads as an active login.
+    assert not auth.exists()
+    assert not social.exists()
 
 
 @pytest.mark.unit
