@@ -233,21 +233,25 @@ def _persist_refreshed_oauth_tokens(
     if auth_path is None:
         return True
     try:
-        auth = C._read_json_dict(auth_path)
-        if auth and str(auth.get("access_token") or "").strip() == str(
-            expected.get("access_token") or ""
-        ).strip():
-            C._write_private_json(
-                auth_path,
-                {
-                    **auth,
-                    "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                    "session_generation": int(auth.get("session_generation") or 0) + 1,
-                },
-            )
-    except (OSError, ValueError, TypeError) as exc:
+        # The bind-repair path in card_drop_router also writes community_auth.json
+        # while holding the social-session lock, so both writers must serialize
+        # on the same lock to avoid clobbering each other's updates.
+        with C._social_session_lock(social_path):
+            auth = C._read_json_dict(auth_path)
+            if auth and str(auth.get("access_token") or "").strip() == str(
+                expected.get("access_token") or ""
+            ).strip():
+                C._write_private_json(
+                    auth_path,
+                    {
+                        **auth,
+                        "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
+                        "access_token": access_token,
+                        "refresh_token": refresh_token,
+                        "session_generation": int(auth.get("session_generation") or 0) + 1,
+                    },
+                )
+    except (OSError, ValueError, TypeError, TimeoutError) as exc:
         # The Electron-visible social session is authoritative.  A stale legacy
         # mirror must not make a successful refresh look logged out.
         logger.warning("community_oauth: refreshed auth mirror save failed: %s", exc)

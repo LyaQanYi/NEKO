@@ -674,22 +674,25 @@ def _save_auth(data: dict) -> bool:
 def _persist_repaired_bind(access_token: str, bind: dict) -> None:
     """Record a repaired bind without clobbering a concurrent refresh.
 
-    Read-modify-write under the same lock the social-session CAS uses, merging
-    only the ``bind`` key: a refresh or account switch landing between read and
-    write owns the tokens and must not be rolled back to this snapshot.
+    Serialized on the social-session lock rather than one keyed to the auth
+    file: ``_persist_refreshed_oauth_tokens`` rewrites ``community_auth.json``
+    while holding that lock, so it is the only lock both writers share.
     """
     path = _auth_path()
-    if path is None:
+    social_path = _social_session_path()
+    if path is None or social_path is None:
         return
     try:
-        with _social_session_lock(path):
+        with _social_session_lock(social_path):
             current = _read_json_dict(path)
             if not current:
                 return
+            # A refresh or account switch won the race; its tokens own the
+            # record and this bind describes a session that is no longer there.
             if str(current.get("access_token") or "").strip() != access_token:
                 return
             _write_private_json(path, {**current, "bind": bind})
-    except OSError as exc:
+    except (OSError, TimeoutError) as exc:
         logger.warning("card_drop: persist repaired bind failed: %s", exc)
 
 
