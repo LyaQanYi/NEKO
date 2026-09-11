@@ -671,6 +671,28 @@ def _save_auth(data: dict) -> bool:
     return True
 
 
+def _persist_repaired_bind(access_token: str, bind: dict) -> None:
+    """Record a repaired bind without clobbering a concurrent refresh.
+
+    Read-modify-write under the same lock the social-session CAS uses, merging
+    only the ``bind`` key: a refresh or account switch landing between read and
+    write owns the tokens and must not be rolled back to this snapshot.
+    """
+    path = _auth_path()
+    if path is None:
+        return
+    try:
+        with _social_session_lock(path):
+            current = _read_json_dict(path)
+            if not current:
+                return
+            if str(current.get("access_token") or "").strip() != access_token:
+                return
+            _write_private_json(path, {**current, "bind": bind})
+    except OSError as exc:
+        logger.warning("card_drop: persist repaired bind failed: %s", exc)
+
+
 def _save_social_session(
     base: str,
     access: str | None,
@@ -1459,12 +1481,8 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
         if bind.get("bound"):
             # Persist it, or /auth-status keeps reporting the stale failure and
-            # every later handoff repeats the bind. Only write when the record
-            # still holds the token we bound, so a concurrent refresh or account
-            # switch is not overwritten.
-            current = await asyncio.to_thread(_load_auth) or {}
-            if str(current.get("access_token") or "").strip() == access_token:
-                await asyncio.to_thread(_save_auth, {**current, "bind": bind})
+            # every later handoff repeats the bind.
+            await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
     if not _consume_sync_ticket(sync_ticket):
         return JSONResponse(
             {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors

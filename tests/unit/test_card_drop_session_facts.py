@@ -1693,6 +1693,59 @@ def test_social_session_init_does_not_rebind_a_settled_desktop_client(
         assert response.json()["bind"] == bind
 
 
+def test_social_session_init_keeps_a_concurrent_refresh_when_persisting_bind(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A refresh landing during the bind call owns the tokens; do not roll it back."""
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "refresh_token": "desktop-refresh-old",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    async def rotate_then_bind(social_base, access_token):
+        # Desktop refreshes while the bind cloud call is still in flight.
+        auth.write_text(
+            json.dumps(
+                {
+                    "access_token": "desktop-token-rotated",
+                    "refresh_token": "desktop-refresh-new",
+                    "bind": {"bound": False, "error": "cloud_unreachable"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {"bound": True, "error": None}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", rotate_then_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 200
+    # The rotated credentials must survive; a whole-record rewrite would have
+    # restored the pre-bind snapshot and broken the next refresh.
+    persisted = json.loads(auth.read_text(encoding="utf-8"))
+    assert persisted["access_token"] == "desktop-token-rotated"
+    assert persisted["refresh_token"] == "desktop-refresh-new"
+
+
 def test_social_session_init_requires_oauth_desktop_identity(client, monkeypatch):
     monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: None)
     ticket = _issue_sync_ticket(client)
