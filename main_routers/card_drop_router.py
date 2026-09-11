@@ -1528,6 +1528,15 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
             # Persist it, or /auth-status keeps reporting the stale failure and
             # every later handoff repeats the bind.
             await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
+        # The bind retry is a cloud round trip; Desktop may have refreshed,
+        # logged out, or switched accounts while it ran. Shipping the captured
+        # bearer now could hand over a revoked token or the previous account's,
+        # and the ticket would be spent either way.
+        current = await asyncio.to_thread(_desktop_session_snapshot) or {}
+        if str(current.get("access_token") or "").strip() != access_token:
+            return JSONResponse(
+                {"detail": "desktop_login_required"}, status_code=409, headers=cors
+            )
     if not _consume_sync_ticket(sync_ticket):
         return JSONResponse(
             {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors

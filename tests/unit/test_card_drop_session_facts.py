@@ -1659,6 +1659,45 @@ def test_social_session_init_repairs_a_failed_desktop_bind(
     assert response.json()["bind"] == {"bound": True, "error": None}
 
 
+def test_social_session_init_rejects_a_session_replaced_during_the_bind_retry(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A logout/account switch during the bind round trip must not ship the bearer."""
+    from main_routers import community_oauth
+
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    snapshots = [_delegate_session()]
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshots[-1])
+
+    async def switch_account_mid_bind(_social_base, _access_token):
+        # Desktop logs out while the cloud bind is in flight.
+        snapshots.append({**_delegate_session(), "access_token": ""})
+        return {"bound": True, "error": None}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", switch_account_mid_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert "desktop-token-a" not in response.text
+    # The handoff never happened, so the ticket must survive for a retry.
+    assert C._sync_ticket_is_valid(ticket)
+
+
 def test_social_session_init_does_not_rebind_a_settled_desktop_client(
     client,
     monkeypatch,
