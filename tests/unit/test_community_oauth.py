@@ -891,8 +891,10 @@ async def test_oauth_callback_offloads_credential_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
     monkeypatch.setattr(O, "_load_oauth_pending", load_pending)
     monkeypatch.setattr(O, "_unlink_pending", unlink_pending)
-    monkeypatch.setattr(C, "_save_auth", save_auth)
-    monkeypatch.setattr(C, "_save_social_session", save_social)
+    # Both records are written inside one social-session lock scope, so the
+    # callback now goes through the unlocked writers.
+    monkeypatch.setattr(C, "_save_auth_unlocked", save_auth)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", save_social)
 
     event_loop_thread = threading.get_ident()
     response = await O._handle_oauth_callback("auth-code", "expected-state")
@@ -956,8 +958,8 @@ async def test_oauth_callback_rolls_back_partial_credential_write(
     monkeypatch.setattr(O, "_exchange_oauth_code", fake_exchange)
     monkeypatch.setattr(O, "_bootstrap_session", fake_bootstrap)
     monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
-    monkeypatch.setattr(C, "_save_auth", save_auth)
-    monkeypatch.setattr(C, "_save_social_session", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(C, "_save_auth_unlocked", save_auth)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", lambda *_args, **_kwargs: False)
 
     response = await O._handle_oauth_callback("auth-code", "expected-state")
 

@@ -510,18 +510,52 @@ def _persist_oauth_credentials(
         logger.warning("community_oauth: credential snapshot failed: %s", exc)
         return False
 
-    auth_saved = C._save_auth(auth_payload)
-    social_saved = auth_saved and C._save_social_session(
-        social_base,
-        access_token,
-        refresh_token,
-        local_user_id=local_user_id,
-        auth_source="oauth",
-        auth_public_url=auth_public_url,
-        client_id=client_id,
-    )
-    if auth_saved and social_saved:
-        return True
+    auth_saved = False
+    social_saved = False
+    try:
+        # Both credential files must move as one unit: a concurrent bind repair
+        # or refresh holds this same lock, so without it the two records can be
+        # left describing different accounts.
+        with C._social_session_lock(social_path):
+            auth_saved = C._save_auth_unlocked(auth_payload)
+            social_saved = auth_saved and C._save_social_session_unlocked(
+                social_path,
+                social_base,
+                access_token,
+                refresh_token,
+                local_user_id=local_user_id,
+                auth_source="oauth",
+                auth_public_url=auth_public_url,
+                client_id=client_id,
+            )
+            if auth_saved and social_saved:
+                return True
+
+            rollback_ok = True
+            for path, existed, payload in snapshots:
+                if path == social_path and social_saved:
+                    continue
+                try:
+                    if existed and payload is not None:
+                        C._write_private_json(path, payload)
+                    elif not existed:
+                        path.unlink(missing_ok=True)
+                except OSError as exc:
+                    rollback_ok = False
+                    logger.warning(
+                        "community_oauth: credential rollback failed for %s: %s",
+                        path.name,
+                        exc,
+                    )
+            if not rollback_ok:
+                logger.warning(
+                    "community_oauth: credential files may be inconsistent after "
+                    "a failed save"
+                )
+            return False
+    except (OSError, TimeoutError) as exc:
+        logger.warning("community_oauth: credential persist failed: %s", exc)
+        return False
 
     rollback_ok = True
     for path, existed, payload in snapshots:

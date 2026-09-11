@@ -659,7 +659,8 @@ def _write_social_session_record(path: Path, data: dict) -> None:
         _write_private_json(path, data)
 
 
-def _save_auth(data: dict) -> bool:
+def _save_auth_unlocked(data: dict) -> bool:
+    """Write community_auth.json without locking; caller must hold the lock."""
     p = _auth_path()
     if not p:
         return False
@@ -669,6 +670,18 @@ def _save_auth(data: dict) -> bool:
         logger.warning("card_drop: save auth failed: %s", exc)
         return False
     return True
+
+
+def _save_auth(data: dict) -> bool:
+    social_path = _social_session_path()
+    if social_path is None:
+        return _save_auth_unlocked(data)
+    try:
+        with _social_session_lock(social_path):
+            return _save_auth_unlocked(data)
+    except (OSError, TimeoutError) as exc:
+        logger.warning("card_drop: save auth failed: %s", exc)
+        return False
 
 
 def _persist_repaired_bind(access_token: str, bind: dict) -> None:
@@ -696,7 +709,8 @@ def _persist_repaired_bind(access_token: str, bind: dict) -> None:
         logger.warning("card_drop: persist repaired bind failed: %s", exc)
 
 
-def _save_social_session(
+def _save_social_session_unlocked(
+    path: Path,
     base: str,
     access: str | None,
     refresh: str | None,
@@ -706,12 +720,10 @@ def _save_social_session(
     auth_public_url: str | None = None,
     client_id: str | None = None,
 ) -> bool:
+    """Write social session without acquiring lock; caller must hold it."""
     normalized_user_id = _normalize_local_user_id(local_user_id)
     normalized_source = _normalize_auth_source(auth_source)
     if not access or not normalized_user_id or not normalized_source:
-        return False
-    p = _social_session_path()
-    if not p:
         return False
     data = {
         "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
@@ -730,11 +742,41 @@ def _save_social_session(
     if oauth_client:
         data["client_id"] = oauth_client
     try:
-        _write_social_session_record(p, data)
+        _write_private_json(path, data)
     except OSError as exc:
         logger.warning("card_drop: save social session failed: %s", exc)
         return False
     return True
+
+
+def _save_social_session(
+    base: str,
+    access: str | None,
+    refresh: str | None,
+    *,
+    local_user_id: str,
+    auth_source: str,
+    auth_public_url: str | None = None,
+    client_id: str | None = None,
+) -> bool:
+    p = _social_session_path()
+    if not p:
+        return False
+    try:
+        with _social_session_lock(p):
+            return _save_social_session_unlocked(
+                p,
+                base,
+                access,
+                refresh,
+                local_user_id=local_user_id,
+                auth_source=auth_source,
+                auth_public_url=auth_public_url,
+                client_id=client_id,
+            )
+    except (OSError, TimeoutError) as exc:
+        logger.warning("card_drop: save social session failed: %s", exc)
+        return False
 
 
 def _persist_session_credentials(
