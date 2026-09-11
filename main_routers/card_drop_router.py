@@ -1457,6 +1457,14 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         # ticket used to be the SPA's chance to repair a failed bind, so retry
         # here before it is spent.
         bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
+        if bind.get("bound"):
+            # Persist it, or /auth-status keeps reporting the stale failure and
+            # every later handoff repeats the bind. Only write when the record
+            # still holds the token we bound, so a concurrent refresh or account
+            # switch is not overwritten.
+            current = await asyncio.to_thread(_load_auth) or {}
+            if str(current.get("access_token") or "").strip() == access_token:
+                await asyncio.to_thread(_save_auth, {**current, "bind": bind})
     if not _consume_sync_ticket(sync_ticket):
         return JSONResponse(
             {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
