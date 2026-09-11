@@ -1372,6 +1372,10 @@ async def social_session_init_options(request: Request):
     cors = _sync_cors_headers(request)
     if cors is None:
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    if not client_registration.proof_transport_allowed(_social_base_url()):
+        return JSONResponse(
+            {"detail": "insecure_transport"}, status_code=403, headers=cors
+        )
     return JSONResponse({"ok": True}, headers=cors)
 
 
@@ -1381,19 +1385,37 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
 
     The community SPA (opened by NEKO with a ``#native_sync`` ticket) redeems
     that one-time ticket here. In exchange it receives the Desktop
-    ``neko-servers-desktop-*`` access/refresh tokens, which N.E.K.O.Servers
-    already accepts (``AUTH_ALLOWED_DESKTOP_CLIENT_IDS``). The SPA then runs
-    its normal ``/api/auth/session/bootstrap`` and publishes the session, so no
-    second browser login is needed and both sides share one token family.
+    ``neko-servers-desktop-*`` access token, which N.E.K.O.Servers already
+    accepts (``AUTH_ALLOWED_DESKTOP_CLIENT_IDS``). The SPA then runs its normal
+    ``/api/auth/session/bootstrap`` and publishes the session, so no second
+    browser login is needed.
+
+    The refresh token stays here: Desktop is the sole owner of that rotating
+    family, and a second independent rotator would invalidate both sides. The
+    community session therefore lives as long as the handed-over access token.
 
     Direction is Python → SPA over the allowlisted community Origin only; the
-    Web tab never sends its own bearer to localhost. Ticket is single-use.
+    Web tab never sends its own bearer to localhost. Ticket is single-use, and
+    is consumed only once the response is known to be deliverable.
     """
+    if not (request.headers.get("origin") or "").strip():
+        # CORS cannot authenticate a non-browser caller, and any local process
+        # can mint a ticket via /sync-ticket. Requiring an Origin keeps this
+        # endpoint reachable only from the real cross-origin community tab.
+        return JSONResponse(
+            {"detail": "origin_required"},
+            status_code=403,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
     cors = _sync_cors_headers(request)
     if cors is None:
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    if not client_registration.proof_transport_allowed(_social_base_url()):
+        return JSONResponse(
+            {"detail": "insecure_transport"}, status_code=403, headers=cors
+        )
     sync_ticket = payload.get("sync_ticket") or payload.get("syncTicket")
-    if not _consume_sync_ticket(sync_ticket):
+    if not _sync_ticket_is_valid(sync_ticket):
         return JSONResponse(
             {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
         )
@@ -1417,17 +1439,37 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         return JSONResponse(
             {"detail": "legacy_session_not_supported"}, status_code=409, headers=cors
         )
+    snapshot_base = str(snapshot.get("base_url") or "").strip().rstrip("/")
+    if snapshot_base and not _same_originish(snapshot_base, _social_base_url()):
+        # The saved login belongs to another community; refuse rather than ship
+        # its bearer to the currently configured one. The session stays on disk
+        # so pointing NEKO_SOCIAL_BASE_URL back restores it.
+        return JSONResponse(
+            {"detail": "desktop_login_required"}, status_code=409, headers=cors
+        )
     from main_routers import community_oauth as _co
 
+    auth = await asyncio.to_thread(_load_auth) or {}
+    # 老会话没存 bind 字段 → 视为已绑（向后兼容，正常单账号场景成立）
+    bind = auth.get("bind") or {"bound": True, "error": None}
+    if not bind.get("bound") and bind.get("error") != _BIND_OWNERSHIP_CONFLICT:
+        # Desktop binds once at callback time and never retries. Redeeming the
+        # ticket used to be the SPA's chance to repair a failed bind, so retry
+        # here before it is spent.
+        bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
+    if not _consume_sync_ticket(sync_ticket):
+        return JSONResponse(
+            {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
+        )
     return JSONResponse(
         {
             "access_token": access_token,
-            "refresh_token": str(snapshot.get("refresh_token") or "").strip() or None,
             "local_user_id": local_user_id,
             "auth_public_url": str(
                 snapshot.get("auth_public_url") or _co._auth_public_url()
             ).rstrip("/"),
             "client_id": str(snapshot.get("client_id") or _co._desktop_client_id()),
+            "bind": bind,
         },
         headers={**cors, "Cache-Control": "no-store", "Pragma": "no-cache"},
     )

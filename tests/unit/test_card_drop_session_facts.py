@@ -621,10 +621,12 @@ async def test_shared_facts_selector_rejects_mismatched_runtime_character(
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     from main_routers import community_oauth
 
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
+    # Keep the suite off the developer's real credential file.
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
 
     async def current_desktop_status():
         snapshot = await asyncio.to_thread(C._desktop_session_snapshot)
@@ -1476,11 +1478,13 @@ def test_social_session_init_hands_desktop_oauth_to_community_origin(client, mon
     assert response.headers["cache-control"] == "no-store"
     assert response.json() == {
         "access_token": "desktop-token-a",
-        "refresh_token": "desktop-refresh-a",
         "local_user_id": USER_A_ID,
         "auth_public_url": "https://auth.example",
         "client_id": "neko-servers-desktop-dev",
+        "bind": {"bound": True, "error": None},
     }
+    # Desktop stays the sole owner of the refresh-token family.
+    assert "desktop-refresh-a" not in response.text
 
     replay = client.post(
         "/api/card-drop/social-session-init",
@@ -1489,6 +1493,204 @@ def test_social_session_init_hands_desktop_oauth_to_community_origin(client, mon
     )
     assert replay.status_code == 403
     assert replay.json() == {"detail": "invalid_sync_ticket"}
+
+
+def test_social_session_init_rejects_a_request_without_origin(client, monkeypatch):
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "refresh_token": "desktop-refresh-a"},
+    )
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "origin_required"}
+    assert "desktop-token-a" not in response.text
+    assert C._sync_ticket_is_valid(ticket)
+
+
+def test_social_session_init_rejects_a_plaintext_non_loopback_base(client, monkeypatch):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://community.example")
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {
+            **_delegate_session(),
+            "base_url": "http://community.example",
+            "refresh_token": "desktop-refresh-a",
+        },
+    )
+    ticket = _issue_sync_ticket(client)
+
+    preflight = client.options(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "http://community.example"},
+    )
+    assert preflight.status_code == 403
+    assert preflight.json() == {"detail": "insecure_transport"}
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "http://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "insecure_transport"}
+    assert "desktop-token-a" not in response.text
+    assert C._sync_ticket_is_valid(ticket)
+
+
+def test_social_session_init_allows_a_loopback_http_base(client, monkeypatch):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://localhost:3000")
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {**_delegate_session(), "base_url": "http://127.0.0.1:3000"},
+    )
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "http://localhost:3000"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["access_token"] == "desktop-token-a"
+
+
+def test_social_session_init_keeps_the_ticket_when_identity_is_unavailable(
+    client,
+    monkeypatch,
+):
+    outcome = {"value": (None, "unavailable")}
+
+    async def resolved_snapshot():
+        return outcome["value"]
+
+    monkeypatch.setattr(C, "_native_delegate_session_snapshot", resolved_snapshot)
+    ticket = _issue_sync_ticket(client)
+
+    unavailable = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"detail": "identity_verification_unavailable"}
+    assert C._sync_ticket_is_valid(ticket)
+
+    outcome["value"] = (_delegate_session(), "")
+    retry = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+    assert retry.status_code == 200
+    assert retry.json()["access_token"] == "desktop-token-a"
+
+
+def test_social_session_init_rejects_a_snapshot_from_another_environment(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        C,
+        "_desktop_session_snapshot",
+        lambda: {
+            **_delegate_session(),
+            "base_url": "https://production.example",
+            "refresh_token": "prod-refresh",
+            "auth_public_url": "https://auth.production.example",
+            "client_id": "neko-servers-desktop-prod",
+        },
+    )
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert "prod-refresh" not in response.text
+    assert "desktop-token-a" not in response.text
+
+
+def test_social_session_init_repairs_a_failed_desktop_bind(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    bound = []
+
+    async def record_guest_bind(social_base, access_token):
+        bound.append((social_base, access_token))
+        return {"bound": True, "error": None}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", record_guest_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 200
+    assert bound == [("https://community.example", "desktop-token-a")]
+    assert response.json()["bind"] == {"bound": True, "error": None}
+
+
+def test_social_session_init_does_not_rebind_a_settled_desktop_client(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    auth = tmp_path / "community_auth.json"
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    async def unexpected_guest_bind(social_base, access_token):
+        raise AssertionError("a settled bind must not cost another cloud round trip")
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", unexpected_guest_bind)
+
+    for bind in (
+        {"bound": True, "error": None},
+        {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT},
+    ):
+        auth.write_text(json.dumps({"bind": bind}), encoding="utf-8")
+        ticket = _issue_sync_ticket(client)
+
+        response = client.post(
+            "/api/card-drop/social-session-init",
+            headers={"Origin": "https://community.example"},
+            json={"sync_ticket": ticket},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["access_token"] == "desktop-token-a"
+        assert response.json()["bind"] == bind
 
 
 def test_social_session_init_requires_oauth_desktop_identity(client, monkeypatch):
