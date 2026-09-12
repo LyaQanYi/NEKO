@@ -22,7 +22,7 @@ import secrets
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -678,6 +678,15 @@ def _write_social_session_record(path: Path, data: dict) -> None:
         _write_private_json(path, data)
 
 
+@contextmanager
+def _social_session_locks(paths: list[Path]):
+    """Fence primary and legacy credentials in the same order for every writer."""
+    with ExitStack() as locks:
+        for path in sorted(set(paths), key=str):
+            locks.enter_context(_social_session_lock(path))
+        yield
+
+
 def _save_auth_unlocked(data: dict) -> bool:
     """Write community_auth.json without locking; caller must hold the lock."""
     p = _auth_path()
@@ -854,59 +863,60 @@ def _persist_session_identity_metadata(
     expected_access = str(snapshot.get("access_token") or "").strip()
     expected_base = str(snapshot.get("base_url") or _social_base_url()).strip().rstrip("/")
     expected_refresh = str(snapshot.get("refresh_token") or "").strip()
-    social_saved = False
-    found_social_session = False
-    for path in _social_session_paths():
-        try:
-            with _social_session_lock(path):
+    paths = _social_session_paths()
+    try:
+        # The fallback creation and auth mirror update must share the same
+        # fence as deletion, not just the write to an individual social file.
+        with _social_session_locks(paths):
+            auth = _load_auth()
+            for path in paths:
                 data = _read_json_dict(path)
                 access = str((data or {}).get("token") or "").strip()
                 if not data or not access:
                     continue
-                found_social_session = True
                 base = str(data.get("baseUrl") or _social_base_url()).strip().rstrip("/")
                 refresh = str(data.get("refresh_token") or "").strip()
                 if (access, base, refresh) != (
-                    expected_access,
-                    expected_base,
-                    expected_refresh,
+                    expected_access, expected_base, expected_refresh,
                 ):
-                    # The authoritative Electron session changed after validation.
                     return False
-                upgraded = {
+                _write_private_json(path, {
                     **data,
                     "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
                     "local_user_id": normalized_user_id,
                     "auth_source": normalized_source,
-                }
-                _write_private_json(path, upgraded)
-        except OSError as exc:
-            logger.warning("card_drop: save social identity metadata failed: %s", exc)
-            return False
-        social_saved = True
-        break
+                })
+                break
+            else:
+                # Only a still-current auth-only session can create its social
+                # companion. A snapshot validated before logout is not enough.
+                if not auth or not paths or (
+                    str(auth.get("access_token") or "").strip(),
+                    str(auth.get("refresh_token") or "").strip(),
+                ) != (expected_access, expected_refresh):
+                    return False
+                if not _save_social_session_unlocked(
+                    paths[0], expected_base, expected_access, expected_refresh or None,
+                    local_user_id=normalized_user_id, auth_source=normalized_source,
+                ):
+                    return False
 
-    if not found_social_session:
-        # A pre-Electron community_auth.json session still needs the companion
-        # file. It is safe to create because no authoritative social file exists.
-        social_saved = _save_social_session(
-            expected_base,
-            expected_access,
-            expected_refresh or None,
-            local_user_id=normalized_user_id,
-            auth_source=normalized_source,
-        )
-
-    auth = _load_auth()
-    auth_saved = True
-    if auth is not None:
-        auth["schema_version"] = _SOCIAL_SESSION_SCHEMA_VERSION
-        auth["local_user_id"] = normalized_user_id
-        auth["auth_source"] = normalized_source
-        user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
-        auth["user"] = {**user, "id": auth["local_user_id"]}
-        auth_saved = _save_auth(auth)
-    return social_saved and auth_saved
+            if auth is not None:
+                # Do not apply an older identity to a newer auth mirror.
+                if str(auth.get("access_token") or "").strip() != expected_access:
+                    return False
+                user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
+                return _save_auth_unlocked({
+                    **auth,
+                    "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
+                    "local_user_id": normalized_user_id,
+                    "auth_source": normalized_source,
+                    "user": {**user, "id": normalized_user_id},
+                })
+            return True
+    except (OSError, TimeoutError) as exc:
+        logger.warning("card_drop: save social identity metadata failed: %s", exc)
+        return False
 
 
 def _unlink_credentials(paths: list[Path]) -> bool:
@@ -930,27 +940,23 @@ def _clear_auth() -> bool:
     # community_auth.json 的删除也必须在 social-session 锁内：否则
     # _persist_repaired_bind 可在锁内读到旧记录、在本次删除之后把它写回去，
     # 登出只清掉 social 文件而镜像复活，clear 还会误报失败。
-    lock_path = _social_session_path()
     try:
-        if lock_path is not None:
-            with _social_session_lock(lock_path):
-                success = _unlink_credentials(paths) and success
-        else:
+        with _social_session_locks(_social_session_paths()):
             success = _unlink_credentials(paths) and success
+            for path in paths:
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    success = False
+                    logger.warning("card_drop: cannot verify credential clear for %s: %s", path, exc)
+                else:
+                    success = False
+                    logger.warning("card_drop: credential still exists after clear: %s", path)
     except (OSError, TimeoutError) as exc:
         success = False
         logger.warning("card_drop: clear credentials failed to fence writers: %s", exc)
-    for path in paths:
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            success = False
-            logger.warning("card_drop: cannot verify credential clear for %s: %s", path, exc)
-        else:
-            success = False
-            logger.warning("card_drop: credential still exists after clear: %s", path)
     if success:
         _clear_native_delegates()
     return success

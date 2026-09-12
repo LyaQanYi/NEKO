@@ -1875,6 +1875,61 @@ def test_clear_auth_waits_for_the_social_session_lock(tmp_path, monkeypatch):
     assert not social.exists()
 
 
+def test_clear_auth_fences_a_legacy_identity_write(tmp_path, monkeypatch):
+    """A paused legacy writer must finish before logout deletes either path."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    auth = tmp_path / "legacy" / "community_auth.json"
+    legacy = auth.with_name("social_session.json")
+    primary = tmp_path / "desktop" / "social_session.json"
+    auth.parent.mkdir()
+    auth.write_text(json.dumps({"access_token": "token-a"}), encoding="utf-8")
+    legacy.write_text(json.dumps({"token": "token-a"}), encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setenv("NEKO_USER_DATA_DIR", str(primary.parent))
+    assert C._social_session_paths() == [primary, legacy]
+
+    writing = threading.Event()
+    release = threading.Event()
+    clearing = threading.Event()
+    real_write = C._write_private_json
+    real_lock = C._social_session_lock
+
+    def pause_write(path, data):
+        if path == legacy:
+            writing.set()
+            assert release.wait(5)
+        real_write(path, data)
+
+    def observed_lock(path):
+        if writing.is_set():
+            clearing.set()
+        return real_lock(path)
+
+    monkeypatch.setattr(C, "_write_private_json", pause_write)
+    monkeypatch.setattr(C, "_social_session_lock", observed_lock)
+    snapshot = {"access_token": "token-a"}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writer = pool.submit(C._persist_session_identity_metadata, snapshot, USER_A_ID, "oauth")
+        try:
+            assert writing.wait(5)
+            logout = pool.submit(C._clear_auth)
+            assert clearing.wait(5)
+            assert not logout.done()
+        finally:
+            release.set()
+        assert writer.result(timeout=5)
+        assert logout.result(timeout=5)
+
+    assert C._load_social_session() is None
+    assert C._load_auth() is None
+    assert not primary.exists()
+    assert not legacy.exists()
+    # A lookup that finishes after logout must not recreate the companion file.
+    assert not C._persist_session_identity_metadata(snapshot, USER_A_ID, "oauth")
+    assert C._desktop_session_snapshot() is None
+
+
 def test_social_session_init_rejects_a_token_revoked_during_the_bind_retry(
     client,
     monkeypatch,
