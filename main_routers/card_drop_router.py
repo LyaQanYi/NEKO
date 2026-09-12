@@ -1267,8 +1267,15 @@ async def auth_status_endpoint(request: Request):
 
 @router.get("/sync-ticket", summary="签发一次性社区网页登录态同步票据")
 async def sync_ticket_endpoint(request: Request):
-    """Issue a short-lived ticket readable only by the local NEKO page."""
-    if not _local_request_source_allowed(request):
+    """Issue a short-lived ticket readable only by the local NEKO page.
+
+    The ticket transitively redeems the Desktop OAuth bearer, so minting gets
+    the same browser boundary as /native-delegate: Fetch Metadata proving the
+    request came from this server's own page. A headerless native client can
+    no longer mint one; social-session-init then only ever consumes tickets
+    that originated from the trusted local UI.
+    """
+    if not _local_ui_request_source_allowed(request):
         return JSONResponse(
             {"detail": "origin_not_allowed"},
             status_code=403,
@@ -1278,6 +1285,36 @@ async def sync_ticket_endpoint(request: Request):
         {"sync_ticket": _issue_sync_ticket(), "expires_in": _SYNC_TICKET_TTL_SEC},
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
+
+
+def _consume_sync_ticket_for_verified_session(
+    sync_ticket: object,
+    access_token: str,
+) -> str:
+    """Consume the ticket only while the verified session still owns the file.
+
+    Returns "ok", "changed" (desktop session was replaced / lock busy; ticket
+    preserved), or "invalid" (the ticket itself is spent).
+    """
+    social_path = _social_session_path()
+    if social_path is None:
+        return "ok" if _consume_sync_ticket(sync_ticket) else "invalid"
+    try:
+        # The Electron main process takes this same lock for logout / account
+        # switch / token refresh, so its write either completed before this
+        # scope (the re-read below mismatches -> 409) or it waits until the
+        # ticket is consumed and the response is already being queued.
+        with _social_session_lock(social_path):
+            current = _desktop_session_snapshot()
+            current_token = str((current or {}).get("access_token") or "").strip()
+            if current_token != access_token:
+                return "changed"
+            return "ok" if _consume_sync_ticket(sync_ticket) else "invalid"
+    except (OSError, TimeoutError) as exc:
+        # A concurrent writer is holding the lock; assume the session is being
+        # replaced and keep the ticket for a retry.
+        logger.warning("card_drop: sync ticket consume fenced off: %s", exc)
+        return "changed"
 
 
 def _handoff_return_url(return_to: str | None, audience: str) -> str | None:
@@ -1466,9 +1503,10 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
     is consumed only once the response is known to be deliverable.
     """
     if not (request.headers.get("origin") or "").strip():
-        # CORS cannot authenticate a non-browser caller, and any local process
-        # can mint a ticket via /sync-ticket. Requiring an Origin keeps this
-        # endpoint reachable only from the real cross-origin community tab.
+        # CORS cannot authenticate a non-browser caller, and the ticket must
+        # never be redeemable by one: /sync-ticket only mints from the local
+        # UI's browser context, so a headerless native client holds no ticket
+        # and this Origin requirement rejects its direct calls.
         return JSONResponse(
             {"detail": "origin_required"},
             status_code=403,
@@ -1524,21 +1562,20 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         # ticket used to be the SPA's chance to repair a failed bind, so retry
         # here before it is spent.
         bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
-        if bind.get("bound"):
-            # Persist it, or /auth-status keeps reporting the stale failure and
-            # every later handoff repeats the bind.
+        if bind.get("bound") or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+            # Persist repaired binds and terminal conflicts alike, or
+            # /auth-status keeps reporting the stale transient failure and
+            # every later handoff repeats the bind round trip.
             await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
     # _load_auth 和 _oauth_guest_bind 都是 await 点，Desktop 登出、刷新、切号都可能
-    # 在这期间发生。原先只有 bind 重试分支复查，已绑定和 ownership-conflict 两条常见
-    # 路径直接消费 ticket 并下发 bearer。这里改成无条件复查：会话已变就返回 409，
-    # 既不下发凭据，也不消费 ticket（留给用户重试）。
+    # 在这期间发生。这里无条件复查：会话已变就返回 409，既不下发凭据，也不消费
+    # ticket（留给用户重试）。
     #
-    # 注意这里没有对「复查 → 消费」加锁。Desktop 侧的写入在 _social_session_lock 下
-    # 提交，但复查必须走 _native_delegate_session_snapshot（异步 IPC，读的是 PC 进程
-    # 内存中的当前会话），没法放进同步锁作用域；换成读磁盘的 _desktop_session_snapshot
-    # 会和上面 1489 行的判定源不一致，PC 尚未落盘时会误判。所以复查和消费之间仍有一个
-    # 窄窗口 —— 它把「整段 await 期间」收敛到了「一次 IPC 往返」，但没有完全消除。
-    # 彻底消除需要 PC 侧提供带版本号的会话读取接口，属于跨仓库改动。
+    # 「复查 → 消费」在 _social_session_lock 里执行：Electron 侧的登出/切号/刷新
+    # 写 social_session.json 时持有同一把锁（见 social-session-refresh.js 的
+    # .lock 协议），所以那次写入要么发生在进锁之前（锁内复读磁盘发现 token 已变，
+    # 返回 409），要么被挡到 ticket 消费完成之后。复查本身仍需走异步的云端校验，
+    # 没法放进同步锁作用域；残余窗口只剩「出锁 → 响应送达」这段本地回环时间。
     verification_snapshot, _ = await _native_delegate_session_snapshot()
     verification_token = (
         str(verification_snapshot.get("access_token") or "").strip()
@@ -1549,9 +1586,16 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         return JSONResponse(
             {"detail": "desktop_login_required"}, status_code=409, headers=cors
         )
-    if not _consume_sync_ticket(sync_ticket):
+    consume_outcome = await asyncio.to_thread(
+        _consume_sync_ticket_for_verified_session, sync_ticket, access_token
+    )
+    if consume_outcome == "invalid":
         return JSONResponse(
             {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
+        )
+    if consume_outcome != "ok":
+        return JSONResponse(
+            {"detail": "desktop_login_required"}, status_code=409, headers=cors
         )
     return JSONResponse(
         {

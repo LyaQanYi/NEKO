@@ -652,7 +652,10 @@ def client(monkeypatch, tmp_path):
 
 
 def _issue_sync_ticket(client: TestClient) -> str:
-    response = client.get("/api/card-drop/sync-ticket")
+    response = client.get(
+        "/api/card-drop/sync-ticket",
+        headers={"Sec-Fetch-Site": "same-origin"},
+    )
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     ticket = response.json()["sync_ticket"]
@@ -1328,6 +1331,9 @@ def test_sync_ticket_rejects_cross_site_browser_churn(client):
         "/api/card-drop/sync-ticket",
         headers={"Sec-Fetch-Site": "cross-site"},
     )
+    # A headerless caller models a native local process: it must not be able
+    # to mint the ticket that transitively redeems the Desktop OAuth bearer.
+    headerless_native = client.get("/api/card-drop/sync-ticket")
     same_origin = client.get(
         "/api/card-drop/sync-ticket",
         headers={
@@ -1338,6 +1344,7 @@ def test_sync_ticket_rejects_cross_site_browser_churn(client):
 
     assert evil_origin.status_code == 403
     assert blind_browser_get.status_code == 403
+    assert headerless_native.status_code == 403
     assert same_origin.status_code == 200
     assert len(C._native_sync_tickets) == len(before) + 1
 
@@ -1575,6 +1582,9 @@ def test_social_session_init_keeps_the_ticket_when_identity_is_unavailable(
         return outcome["value"]
 
     monkeypatch.setattr(C, "_native_delegate_session_snapshot", resolved_snapshot)
+    # The consume fence re-reads the session file directly; keep it consistent
+    # with the resolved identity so the retry can succeed.
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: _delegate_session())
     ticket = _issue_sync_ticket(client)
 
     unavailable = client.post(
@@ -1696,6 +1706,85 @@ def test_social_session_init_rejects_a_session_replaced_during_the_bind_retry(
     assert "desktop-token-a" not in response.text
     # The handoff never happened, so the ticket must survive for a retry.
     assert C._sync_ticket_is_valid(ticket)
+
+
+def test_social_session_init_refuses_to_consume_when_logout_wins_the_lock(
+    client,
+    monkeypatch,
+):
+    """A desktop logout landing between verification and consumption must not ship the bearer."""
+    from contextlib import contextmanager
+
+    state = {"token": "desktop-token-a"}
+
+    def mutable_snapshot():
+        return {**_delegate_session(), "access_token": state["token"]}
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", mutable_snapshot)
+
+    real_lock = C._social_session_lock
+
+    @contextmanager
+    def logout_under_lock(path):
+        with real_lock(path):
+            # Desktop logs out while the endpoint holds the consume fence.
+            state["token"] = ""
+            yield
+
+    monkeypatch.setattr(C, "_social_session_lock", logout_under_lock)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert "desktop-token-a" not in response.text
+    assert C._sync_ticket_is_valid(ticket)
+
+
+def test_social_session_init_persists_a_terminal_bind_conflict(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A retry that settles on an ownership conflict must not stay a transient failure."""
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    async def conflicting_guest_bind(_social_base, _access_token):
+        return {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", conflicting_guest_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["bind"] == {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT}
+    # /auth-status must report the settled conflict instead of the stale
+    # transient error, or every later handoff repeats the bind round trip.
+    persisted = json.loads(auth.read_text(encoding="utf-8"))
+    assert persisted["bind"] == {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT}
 
 
 def test_social_session_init_does_not_rebind_a_settled_desktop_client(
