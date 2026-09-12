@@ -586,6 +586,48 @@ async def test_oauth_status_reports_rejected_snapshot_when_cleanup_fails(monkeyp
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("replace_social", [False, True])
+async def test_oauth_status_resolves_login_preserved_by_rejected_cleanup(
+    oauth_app, monkeypatch, replace_social,
+):
+    _client, auth, social, _pending = oauth_app
+    auth.write_text(json.dumps({"access_token": "rejected-token"}), encoding="utf-8")
+    social.write_text(json.dumps({"token": "rejected-token"}), encoding="utf-8")
+    new_auth = {
+        "access_token": "new-login-token",
+        "local_user_id": USER_ID,
+        "auth_source": "oauth",
+    }
+    validated = []
+
+    async def lookup_identity(_base, access):
+        validated.append(access)
+        if access == "rejected-token":
+            # A login may have written only the auth mirror when the older
+            # authoritative session's cloud validation comes back rejected.
+            assert C._save_auth(new_auth)
+            if replace_social:
+                assert C._save_social_session(
+                    "https://community.example", "new-login-token", None,
+                    local_user_id=USER_ID, auth_source="oauth",
+                )
+            return C._CloudIdentityLookup(None, 401, "rejected")
+        assert access == "new-login-token"
+        return C._CloudIdentityLookup(C._CloudIdentity(USER_ID, "oauth", {}), 200)
+
+    # Keep real file reads and cleanup: their successful conditional deletion
+    # is precisely what used to bypass revalidation of the surviving login.
+    monkeypatch.setattr(C, "_lookup_cloud_identity", lookup_identity)
+    status = await O.resolve_saved_oauth_status()
+
+    assert status["logged_in"] is True
+    assert status["snapshot"]["access_token"] == "new-login-token"
+    assert status["auth"] == new_auth
+    assert validated == ["rejected-token", "new-login-token"]
+    assert json.loads(auth.read_text(encoding="utf-8")) == new_auth
+
+
+@pytest.mark.unit
 async def test_oauth_logout_offloads_local_file_operations(monkeypatch):
     worker_threads: list[int] = []
 

@@ -411,10 +411,10 @@ async def _resolve_saved_oauth_status(
             return {"logged_in": False, "snapshot": snapshot, "auth": auth}
 
     cleared = await asyncio.to_thread(_clear_rejected_oauth_snapshot, snapshot)
-    if cleared:
-        return {"logged_in": False, "snapshot": None, "auth": {}}
-
-    logger.warning("community_oauth: rejected credential cleanup did not complete")
+    if not cleared:
+        logger.warning("community_oauth: rejected credential cleanup did not complete")
+    # Conditional cleanup may succeed while preserving a concurrent login,
+    # including a newer auth mirror that now becomes the fallback session.
     current, current_auth = await asyncio.to_thread(_load_oauth_status_records)
     if (
         current
@@ -423,6 +423,8 @@ async def _resolve_saved_oauth_status(
     ):
         # A concurrent login replaced the rejected snapshot while cleanup ran.
         return await _resolve_saved_oauth_status(_attempt + 1)
+    if cleared:
+        return {"logged_in": False, "snapshot": current, "auth": current_auth}
     return {
         "logged_in": False,
         "snapshot": current or snapshot,
