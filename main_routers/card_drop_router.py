@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -60,6 +61,11 @@ _SUPPORTED_AUTH_SOURCES = frozenset({"legacy", "oauth"})
 _native_sync_tickets: dict[str, float] = {}
 # digest -> {expires_at, scopes, local_user_id, audience, session_fingerprint}
 _native_delegates: dict[str, dict] = {}
+# /sync-ticket 在事件循环线程签发，social-session-init 经 asyncio.to_thread 在
+# worker 线程消费（_clear_auth 也可能在线程里清 delegates）；两条线程都会迭代并
+# 修改这两张表，整段持锁，否则并发增删会让迭代抛 RuntimeError 把请求变成 500。
+_native_sync_tickets_lock = threading.Lock()
+_native_delegates_lock = threading.Lock()
 
 
 class _ClientBindingConflict(Exception):
@@ -108,20 +114,26 @@ def _normalize_sync_ticket(value: object) -> str:
 
 
 def _prune_sync_tickets(now: float | None = None) -> None:
+    """Caller must hold ``_native_sync_tickets_lock`` (it is not reentrant)."""
     current = time.monotonic() if now is None else now
-    expired = [digest for digest, expires_at in _native_sync_tickets.items() if expires_at <= current]
+    expired = [
+        digest
+        for digest, expires_at in _native_sync_tickets.items()
+        if expires_at <= current
+    ]
     for digest in expired:
         _native_sync_tickets.pop(digest, None)
 
 
 def _issue_sync_ticket() -> str:
     now = time.monotonic()
-    _prune_sync_tickets(now)
-    while len(_native_sync_tickets) >= _SYNC_TICKET_MAX_ACTIVE:
-        oldest = min(_native_sync_tickets, key=_native_sync_tickets.get)
-        _native_sync_tickets.pop(oldest, None)
-    ticket = secrets.token_urlsafe(32)
-    _native_sync_tickets[_sync_ticket_digest(ticket)] = now + _SYNC_TICKET_TTL_SEC
+    with _native_sync_tickets_lock:
+        _prune_sync_tickets(now)
+        while len(_native_sync_tickets) >= _SYNC_TICKET_MAX_ACTIVE:
+            oldest = min(_native_sync_tickets, key=_native_sync_tickets.get)
+            _native_sync_tickets.pop(oldest, None)
+        ticket = secrets.token_urlsafe(32)
+        _native_sync_tickets[_sync_ticket_digest(ticket)] = now + _SYNC_TICKET_TTL_SEC
     return ticket
 
 
@@ -130,8 +142,9 @@ def _sync_ticket_is_valid(value: object) -> bool:
     if not ticket:
         return False
     now = time.monotonic()
-    _prune_sync_tickets(now)
-    return _native_sync_tickets.get(_sync_ticket_digest(ticket), 0) > now
+    with _native_sync_tickets_lock:
+        _prune_sync_tickets(now)
+        return _native_sync_tickets.get(_sync_ticket_digest(ticket), 0) > now
 
 
 def _consume_sync_ticket(value: object) -> bool:
@@ -139,13 +152,15 @@ def _consume_sync_ticket(value: object) -> bool:
     if not ticket:
         return False
     now = time.monotonic()
-    _prune_sync_tickets(now)
-    digest = _sync_ticket_digest(ticket)
-    expires_at = _native_sync_tickets.pop(digest, 0)
+    with _native_sync_tickets_lock:
+        _prune_sync_tickets(now)
+        digest = _sync_ticket_digest(ticket)
+        expires_at = _native_sync_tickets.pop(digest, 0)
     return expires_at > now
 
 
 def _prune_native_delegates(now: float | None = None) -> None:
+    """Caller must hold ``_native_delegates_lock`` (it is not reentrant)."""
     current = time.monotonic() if now is None else now
     expired = [
         digest
@@ -157,7 +172,8 @@ def _prune_native_delegates(now: float | None = None) -> None:
 
 
 def _clear_native_delegates() -> None:
-    _native_delegates.clear()
+    with _native_delegates_lock:
+        _native_delegates.clear()
 
 
 def _desktop_session_fingerprint(snapshot: dict | None) -> str:
@@ -192,23 +208,24 @@ def _issue_native_delegate(
     scopes: frozenset[str] | None = None,
 ) -> str:
     now = time.monotonic()
-    _prune_native_delegates(now)
-    while len(_native_delegates) >= _NATIVE_DELEGATE_MAX_ACTIVE:
-        oldest = min(
-            _native_delegates,
-            key=lambda digest: float(_native_delegates[digest].get("expires_at") or 0),
-        )
-        _native_delegates.pop(oldest, None)
-    ticket = secrets.token_urlsafe(32)
-    requested_scopes = _NATIVE_DELEGATE_SCOPES if scopes is None else frozenset(scopes)
-    scoped = requested_scopes & _NATIVE_DELEGATE_SCOPES
-    _native_delegates[_sync_ticket_digest(ticket)] = {
-        "expires_at": now + _NATIVE_DELEGATE_TTL_SEC,
-        "scopes": scoped,
-        "local_user_id": _normalize_local_user_id(local_user_id),
-        "audience": (audience or "").strip().rstrip("/"),
-        "session_fingerprint": str(session_fingerprint or ""),
-    }
+    with _native_delegates_lock:
+        _prune_native_delegates(now)
+        while len(_native_delegates) >= _NATIVE_DELEGATE_MAX_ACTIVE:
+            oldest = min(
+                _native_delegates,
+                key=lambda digest: float(_native_delegates[digest].get("expires_at") or 0),
+            )
+            _native_delegates.pop(oldest, None)
+        ticket = secrets.token_urlsafe(32)
+        requested_scopes = _NATIVE_DELEGATE_SCOPES if scopes is None else frozenset(scopes)
+        scoped = requested_scopes & _NATIVE_DELEGATE_SCOPES
+        _native_delegates[_sync_ticket_digest(ticket)] = {
+            "expires_at": now + _NATIVE_DELEGATE_TTL_SEC,
+            "scopes": scoped,
+            "local_user_id": _normalize_local_user_id(local_user_id),
+            "audience": (audience or "").strip().rstrip("/"),
+            "session_fingerprint": str(session_fingerprint or ""),
+        }
     return ticket
 
 
@@ -217,17 +234,19 @@ def _native_delegate_entry(value: object) -> dict | None:
     if not ticket:
         return None
     now = time.monotonic()
-    _prune_native_delegates(now)
-    entry = _native_delegates.get(_sync_ticket_digest(ticket))
-    if not entry or float(entry.get("expires_at") or 0) <= now:
-        return None
-    return entry
+    with _native_delegates_lock:
+        _prune_native_delegates(now)
+        entry = _native_delegates.get(_sync_ticket_digest(ticket))
+        if not entry or float(entry.get("expires_at") or 0) <= now:
+            return None
+        return dict(entry)
 
 
 def _discard_native_delegate(value: object) -> None:
     ticket = _normalize_sync_ticket(value)
     if ticket:
-        _native_delegates.pop(_sync_ticket_digest(ticket), None)
+        with _native_delegates_lock:
+            _native_delegates.pop(_sync_ticket_digest(ticket), None)
 
 
 def _social_base_url() -> str:
@@ -700,10 +719,15 @@ def _persist_repaired_bind(access_token: str, bind: dict) -> None:
             current = _read_json_dict(path)
             if not current:
                 return
-            # A refresh or account switch won the race; its tokens own the
-            # record and this bind describes a session that is no longer there.
             if str(current.get("access_token") or "").strip() != access_token:
-                return
+                # 镜像 token 与本次 bind 的 token 不一致有两种含义：更新的登录或
+                # 刷新赢了（不该动），或者 refresh 已写入权威 social_session.json
+                # 而 community_auth.json 镜像那次 best-effort 写失败（该记，否则
+                # /auth-status 永远停在旧的瞬时错误上）。以权威快照裁决。
+                social = _desktop_session_snapshot()
+                authoritative = str((social or {}).get("access_token") or "").strip()
+                if authoritative != access_token:
+                    return
             _write_private_json(path, {**current, "bind": bind})
     except (OSError, TimeoutError) as exc:
         logger.warning("card_drop: persist repaired bind failed: %s", exc)
@@ -885,6 +909,17 @@ def _persist_session_identity_metadata(
     return social_saved and auth_saved
 
 
+def _unlink_credentials(paths: list[Path]) -> bool:
+    success = True
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            success = False
+            logger.warning("card_drop: clear credential failed for %s: %s", path, exc)
+    return success
+
+
 def _clear_auth() -> bool:
     auth_path = _auth_path()
     paths = ([auth_path] if auth_path is not None else []) + _social_session_paths()
@@ -892,16 +927,19 @@ def _clear_auth() -> bool:
     if auth_path is None:
         logger.warning("card_drop: cannot resolve auth path while clearing credentials")
     success = auth_path is not None
-    for path in paths:
-        try:
-            if path.name == _SOCIAL_SESSION_FILENAME:
-                with _social_session_lock(path):
-                    path.unlink(missing_ok=True)
-            else:
-                path.unlink(missing_ok=True)
-        except OSError as exc:
-            success = False
-            logger.warning("card_drop: clear credential failed for %s: %s", path, exc)
+    # community_auth.json 的删除也必须在 social-session 锁内：否则
+    # _persist_repaired_bind 可在锁内读到旧记录、在本次删除之后把它写回去，
+    # 登出只清掉 social 文件而镜像复活，clear 还会误报失败。
+    lock_path = _social_session_path()
+    try:
+        if lock_path is not None:
+            with _social_session_lock(lock_path):
+                success = _unlink_credentials(paths) and success
+        else:
+            success = _unlink_credentials(paths) and success
+    except (OSError, TimeoutError) as exc:
+        success = False
+        logger.warning("card_drop: clear credentials failed to fence writers: %s", exc)
     for path in paths:
         try:
             path.lstat()
@@ -1570,17 +1608,33 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         )
     # 老会话没存 bind 字段 → 视为已绑（向后兼容，正常单账号场景成立）
     bind = auth.get("bind") or {"bound": True, "error": None}
+    bind_retried = False
     if not bind.get("bound") and bind.get("error") != _BIND_OWNERSHIP_CONFLICT:
         # Desktop binds once at callback time and never retries. Redeeming the
         # ticket used to be the SPA's chance to repair a failed bind, so retry
         # here before it is spent — but only after the session revalidation
         # above, so a superseded account never reaches the cloud bind.
+        bind_retried = True
         bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
         if bind.get("bound") or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
             # Persist repaired binds and terminal conflicts alike, or
             # /auth-status keeps reporting the stale transient failure and
             # every later handoff repeats the bind round trip.
             await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
+    if bind_retried:
+        # bind 可能包含多个最长 30 秒的云端往返；期间 token 可能已被云端撤销而
+        # 本地文件未变，锁内复读只比本地 token 发现不了。重跑一次带云端校验的
+        # 复查（仅 bind 分支付出这个延迟），拒绝就 409 并保留票据给用户重试。
+        post_bind_snapshot, _ = await _native_delegate_session_snapshot()
+        post_bind_token = (
+            str(post_bind_snapshot.get("access_token") or "").strip()
+            if post_bind_snapshot
+            else ""
+        )
+        if post_bind_token != access_token:
+            return JSONResponse(
+                {"detail": "desktop_login_required"}, status_code=409, headers=cors
+            )
     # 「复查 → 消费」在 _social_session_lock 里执行：Electron 侧的登出/切号/刷新
     # 写 social_session.json 时持有同一把锁（见 social-session-refresh.js 的
     # .lock 协议），所以那次写入要么发生在进锁之前（锁内复读磁盘发现 token 已变，

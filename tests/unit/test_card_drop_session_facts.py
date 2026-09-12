@@ -927,7 +927,8 @@ def test_expired_native_delegate_does_not_fall_back_to_cloud_auth(
     token = _issue_delegate_from_local_ui(client, monkeypatch, snapshot)
     entry = C._native_delegate_entry(token)
     assert entry is not None
-    entry["expires_at"] = 0
+    # _native_delegate_entry 返回副本（防止调用方改写共享注册表），直接过期注册表条目。
+    C._native_delegates[C._sync_ticket_digest(token)]["expires_at"] = 0
 
     async def unexpected_cloud_auth(_base, _token):
         pytest.fail("expired native delegates must not be retried as cloud tokens")
@@ -1732,6 +1733,188 @@ def test_social_session_init_refuses_to_consume_when_logout_wins_the_lock(
             yield
 
     monkeypatch.setattr(C, "_social_session_lock", logout_under_lock)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert "desktop-token-a" not in response.text
+    assert C._sync_ticket_is_valid(ticket)
+
+
+def test_sync_ticket_registry_survives_cross_thread_churn():
+    """Issue on the loop thread while a worker consumes: no iteration races."""
+    import threading as _threading
+
+    errors: list[Exception] = []
+
+    def churn_issue():
+        try:
+            for _ in range(200):
+                C._issue_sync_ticket()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def churn_consume():
+        try:
+            for _ in range(200):
+                C._consume_sync_ticket(C._issue_sync_ticket())
+                C._sync_ticket_is_valid("not-a-real-ticket-value-ignored")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        _threading.Thread(target=churn_issue),
+        _threading.Thread(target=churn_consume),
+        _threading.Thread(target=churn_consume),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(C._native_sync_tickets) <= C._SYNC_TICKET_MAX_ACTIVE
+
+
+def test_persist_repaired_bind_accepts_a_stale_auth_mirror(tmp_path, monkeypatch):
+    """A refresh that updated social_session.json but failed its mirror write
+    must not strand the repaired bind behind the mirror's older token."""
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "mirror-stale-token",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    social.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "baseUrl": "https://community.example",
+                "token": "authoritative-token",
+                "access_token": "authoritative-token",
+                "local_user_id": USER_A_ID,
+                "auth_source": "oauth",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+
+    C._persist_repaired_bind(
+        "authoritative-token", {"bound": True, "error": None}
+    )
+    persisted = json.loads(auth.read_text(encoding="utf-8"))
+    assert persisted["bind"] == {"bound": True, "error": None}
+
+    # An account switch (the authoritative file also moved on) still wins.
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "mirror-stale-token",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    social.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "baseUrl": "https://community.example",
+                "token": "switched-account-token",
+                "access_token": "switched-account-token",
+                "local_user_id": USER_A_ID,
+                "auth_source": "oauth",
+            }
+        ),
+        encoding="utf-8",
+    )
+    C._persist_repaired_bind(
+        "authoritative-token", {"bound": True, "error": None}
+    )
+    preserved = json.loads(auth.read_text(encoding="utf-8"))
+    assert preserved["bind"] == {"bound": False, "error": "cloud_unreachable"}
+
+
+def test_clear_auth_waits_for_the_social_session_lock(tmp_path, monkeypatch):
+    """Deleting the auth mirror must fence repaired-bind writers on the lock."""
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    auth.write_text(json.dumps({"access_token": "token-a"}), encoding="utf-8")
+    social.write_text(
+        json.dumps({"token": "token-a", "access_token": "token-a"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+
+    # 一个 repaired-bind 写者在持有 social-session 锁：clear 必须在锁上等到
+    # 超时并报告失败，而不是绕过锁把镜像删掉（约 2 秒锁超时）。
+    with C._social_session_lock(social):
+        assert C._clear_auth() is False
+    assert auth.exists()
+    assert social.exists()
+
+    # 锁释放后重试即可正常清理。
+    assert C._clear_auth() is True
+    assert not auth.exists()
+    assert not social.exists()
+
+
+def test_social_session_init_rejects_a_token_revoked_during_the_bind_retry(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A cloud-side revocation during the bind must not burn the ticket."""
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    resolve_calls = {"count": 0}
+
+    async def revoking_resolve():
+        resolve_calls["count"] += 1
+        # The third resolution is the post-bind revalidation.
+        logged_in = resolve_calls["count"] <= 2
+        return {
+            "logged_in": logged_in,
+            "snapshot": _delegate_session() if logged_in else None,
+            "auth": {},
+        }
+
+    monkeypatch.setattr(
+        community_oauth, "resolve_saved_oauth_status", revoking_resolve
+    )
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    async def binding_guest_bind(_social_base, _access_token):
+        return {"bound": True, "error": None}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", binding_guest_bind)
     ticket = _issue_sync_ticket(client)
 
     response = client.post(
