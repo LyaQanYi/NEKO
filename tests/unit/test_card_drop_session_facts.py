@@ -767,10 +767,12 @@ def test_native_delegate_handoff_is_local_ui_only_and_validates_return_url(
     )
 
 
-def test_native_delegate_backfills_a_verified_legacy_desktop_session(
+@pytest.mark.parametrize("endpoint", ["native-delegate", "sync-ticket"])
+def test_native_proof_backfills_a_verified_legacy_desktop_session(
     client,
     tmp_path,
     monkeypatch,
+    endpoint,
 ):
     auth = tmp_path / "community_auth.json"
     social = tmp_path / "social_session.json"
@@ -802,7 +804,7 @@ def test_native_delegate_backfills_a_verified_legacy_desktop_session(
     )
 
     response = client.get(
-        "/api/card-drop/native-delegate",
+        f"/api/card-drop/{endpoint}",
         headers={"Sec-Fetch-Site": "same-origin"},
     )
 
@@ -811,7 +813,16 @@ def test_native_delegate_backfills_a_verified_legacy_desktop_session(
     saved = json.loads(social.read_text(encoding="utf-8"))
     assert saved["local_user_id"] == USER_A_ID
     assert saved["auth_source"] == "oauth"
-    assert C._native_delegate_entry(response.json()["native_delegate"]) is not None
+    if endpoint == "native-delegate":
+        assert C._native_delegate_entry(response.json()["native_delegate"]) is not None
+    else:
+        redeemed = client.post(
+            "/api/card-drop/social-session-init",
+            headers={"Origin": "https://community.example"},
+            json={"sync_ticket": response.json()["sync_ticket"]},
+        )
+        assert redeemed.status_code == 200
+        assert redeemed.json()["access_token"] == "legacy-desktop-token"
 
 
 def test_native_delegate_is_bound_to_the_refreshed_oauth_session(
@@ -1975,6 +1986,7 @@ def test_social_session_init_rejects_a_token_revoked_during_the_bind_retry(
 
     monkeypatch.setattr(community_oauth, "_oauth_guest_bind", binding_guest_bind)
     ticket = _issue_sync_ticket(client)
+    resolve_calls["count"] = 0  # Revoke during redemption, after mint validation.
 
     response = client.post(
         "/api/card-drop/social-session-init",
@@ -2005,7 +2017,7 @@ def test_social_session_init_skips_the_bind_retry_when_the_session_was_replaced(
         token = "desktop-token-a" if reads["count"] <= 2 else "desktop-token-b"
         return {**_delegate_session(), "access_token": token}
 
-    monkeypatch.setattr(C, "_desktop_session_snapshot", aging_snapshot)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
     auth = tmp_path / "community_auth.json"
     auth.write_text(
         json.dumps(
@@ -2023,7 +2035,7 @@ def test_social_session_init_skips_the_bind_retry_when_the_session_was_replaced(
 
     monkeypatch.setattr(community_oauth, "_oauth_guest_bind", unexpected_guest_bind)
     ticket = _issue_sync_ticket(client)
-    reads["count"] = 0  # The issuing snapshot is separate from redemption.
+    monkeypatch.setattr(C, "_desktop_session_snapshot", aging_snapshot)
 
     response = client.post(
         "/api/card-drop/social-session-init",
@@ -3375,3 +3387,27 @@ def test_old_sync_ticket_cannot_disclose_a_later_account(client, monkeypatch, in
     # The low-level final consumer also checks the minting session, closing a
     # switch after preflight and preserving guest-bind-only tickets' purpose.
     assert C._consume_sync_ticket_for_verified_session(ticket, "account-b") == "invalid"
+
+
+def test_sync_ticket_is_redeemable_after_refreshing_an_expired_desktop_session(
+    client, monkeypatch,
+):
+    from main_routers import community_oauth
+
+    current = {"snapshot": _delegate_session(access_token="expired-desktop-token")}
+    refreshed = _delegate_session(access_token="refreshed-desktop-token")
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: current["snapshot"])
+
+    async def refresh_saved_session():
+        current["snapshot"] = refreshed
+        return {"logged_in": True, "snapshot": refreshed, "auth": {}}
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", refresh_saved_session)
+    ticket = _issue_sync_ticket(client)
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"}, json={"sync_ticket": ticket},
+    )
+    assert response.status_code == 200
+    assert response.json()["access_token"] == "refreshed-desktop-token"
+    assert not C._sync_ticket_is_valid(ticket)

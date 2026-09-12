@@ -1346,6 +1346,10 @@ async def sync_ticket_endpoint(request: Request):
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
     try:
+        # Resolve first, as for native delegates: redemption performs this same
+        # refresh/identity backfill and must not invalidate a just-minted proof.
+        # Missing or offline sessions still retain the guest-bind ticket path.
+        await _native_delegate_session_snapshot()
         ticket = await asyncio.to_thread(_issue_sync_ticket_for_session)
     except (OSError, TimeoutError):
         return JSONResponse(
