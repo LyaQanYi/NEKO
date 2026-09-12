@@ -1945,6 +1945,52 @@ def test_clear_auth_fences_a_legacy_identity_write(tmp_path, monkeypatch):
     assert C._desktop_session_snapshot() is None
 
 
+def test_clear_auth_preserves_tickets_issued_after_unlock(client, tmp_path, monkeypatch):
+    """Logout invalidates old tickets before a guest can mint a fresh proof."""
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    auth.write_text(json.dumps({"access_token": "token-a"}), encoding="utf-8")
+    social.write_text(json.dumps({"token": "token-a"}), encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    old_ticket = C._issue_sync_ticket_for_session()
+    unlocked = threading.Event()
+    issued = threading.Event()
+    cleanup_thread = {}
+    real_locks = C._social_session_locks
+
+    @contextmanager
+    def pause_after_logout_unlock(paths):
+        with real_locks(paths):
+            yield
+        if threading.get_ident() == cleanup_thread.get("id"):
+            unlocked.set()
+            assert issued.wait(5)
+
+    def logout():
+        cleanup_thread["id"] = threading.get_ident()
+        return C._clear_auth()
+
+    monkeypatch.setattr(C, "_social_session_locks", pause_after_logout_unlock)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        cleanup = pool.submit(logout)
+        try:
+            assert unlocked.wait(5)
+            new_ticket = C._issue_sync_ticket_for_session()
+        finally:
+            issued.set()
+        assert cleanup.result(timeout=5)
+
+    assert C._desktop_session_snapshot() is None
+    assert not C._sync_ticket_is_valid(old_ticket)
+    assert C._sync_ticket_is_valid(new_ticket)
+    assert C._consume_sync_ticket(new_ticket)
+
+
 def test_social_session_init_rejects_a_token_revoked_during_the_bind_retry(
     client,
     monkeypatch,

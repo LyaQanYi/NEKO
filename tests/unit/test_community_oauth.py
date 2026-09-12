@@ -1207,3 +1207,84 @@ def test_legacy_login_returns_410(oauth_app):
     )
     assert response.status_code == 410
     assert response.json() == {"detail": "legacy_community_login_removed"}
+
+
+@pytest.mark.unit
+def test_rejected_snapshot_cleanup_fences_a_bind_repair(oauth_app, monkeypatch):
+    """A bind repair starting as cleanup releases its lock cannot revive auth."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    _client, auth, social, _pending = oauth_app
+    auth.write_text(json.dumps({"access_token": "rejected-token"}), encoding="utf-8")
+    social.write_text(json.dumps({"token": "rejected-token"}), encoding="utf-8")
+    cleanup_unlocked = threading.Event()
+    continue_cleanup = threading.Event()
+    repair_read = threading.Event()
+    continue_repair = threading.Event()
+    worker_ids = {}
+    real_lock = C._social_session_lock
+    real_read = C._read_json_dict
+
+    @contextmanager
+    def pause_after_cleanup_unlock(path):
+        with real_lock(path):
+            yield
+        if threading.get_ident() == worker_ids.get("cleanup"):
+            cleanup_unlocked.set()
+            assert continue_cleanup.wait(5)
+
+    def pause_after_repair_read(path):
+        data = real_read(path)
+        if path == auth and threading.get_ident() == worker_ids.get("repair"):
+            repair_read.set()
+            assert continue_repair.wait(5)
+        return data
+
+    def clear_rejected():
+        worker_ids["cleanup"] = threading.get_ident()
+        return O._clear_rejected_oauth_snapshot({"access_token": "rejected-token"})
+
+    def repair_bind():
+        worker_ids["repair"] = threading.get_ident()
+        C._persist_repaired_bind("rejected-token", {"bound": True})
+
+    monkeypatch.setattr(C, "_social_session_lock", pause_after_cleanup_unlock)
+    monkeypatch.setattr(C, "_read_json_dict", pause_after_repair_read)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cleanup = pool.submit(clear_rejected)
+        try:
+            assert cleanup_unlocked.wait(5)
+            repair = pool.submit(repair_bind)
+            assert repair_read.wait(5)
+            continue_cleanup.set()
+            assert cleanup.result(timeout=5)
+        finally:
+            continue_cleanup.set()
+            continue_repair.set()
+        repair.result(timeout=5)
+
+    assert not social.exists()
+    assert not auth.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("current_token", ["rejected-token", "new-login-token"])
+def test_rejected_snapshot_cleanup_checks_both_session_paths(
+    oauth_app, monkeypatch, current_token,
+):
+    _client, auth, social, _pending = oauth_app
+    legacy = social.with_name("legacy_social_session.json")
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: legacy)
+    auth.write_text(json.dumps({"access_token": current_token}), encoding="utf-8")
+    social.write_text(json.dumps({"token": current_token}), encoding="utf-8")
+    legacy.write_text(json.dumps({"token": "rejected-token"}), encoding="utf-8")
+
+    assert O._clear_rejected_oauth_snapshot({"access_token": "rejected-token"})
+
+    assert not legacy.exists()
+    if current_token == "rejected-token":
+        assert not auth.exists()
+        assert not social.exists()
+    else:
+        assert json.loads(auth.read_text(encoding="utf-8"))["access_token"] == current_token
+        assert json.loads(social.read_text(encoding="utf-8"))["token"] == current_token

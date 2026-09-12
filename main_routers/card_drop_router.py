@@ -973,13 +973,15 @@ def _clear_auth() -> bool:
                 else:
                     success = False
                     logger.warning("card_drop: credential still exists after clear: %s", path)
+            if success:
+                _clear_native_delegates()
+                # A post-logout guest can mint a ticket as soon as these file
+                # locks are released, so invalidate older proofs before then.
+                with _native_sync_tickets_lock:
+                    _native_sync_tickets.clear()
     except (OSError, TimeoutError) as exc:
         success = False
         logger.warning("card_drop: clear credentials failed to fence writers: %s", exc)
-    if success:
-        _clear_native_delegates()
-        with _native_sync_tickets_lock:
-            _native_sync_tickets.clear()
     return success
 
 

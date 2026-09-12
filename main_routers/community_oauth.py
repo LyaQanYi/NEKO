@@ -261,26 +261,25 @@ def _persist_refreshed_oauth_tokens(
 def _clear_rejected_oauth_snapshot(expected: dict) -> bool:
     """Clear only the rejected credential snapshot; preserve a concurrent login."""
     success = True
-    social_path = C._social_session_path()
-    if social_path is not None:
-        try:
-            with C._social_session_lock(social_path):
-                social = C._read_json_dict(social_path)
-                current_access = str((social or {}).get("token") or "").strip()
-                if current_access == str(expected.get("access_token") or "").strip():
-                    social_path.unlink(missing_ok=True)
-        except (OSError, TimeoutError):
-            success = False
+    social_paths = C._social_session_paths()
     auth_path = C._auth_path()
+    expected_access = str(expected.get("access_token") or "").strip()
+    credentials = [(path, "token") for path in social_paths]
     if auth_path is not None:
-        try:
-            auth = C._read_json_dict(auth_path)
-            if str((auth or {}).get("access_token") or "").strip() == str(
-                expected.get("access_token") or ""
-            ).strip():
-                auth_path.unlink(missing_ok=True)
-        except OSError:
-            success = False
+        credentials.append((auth_path, "access_token"))
+    try:
+        # Keep conditional reads and deletions in the same critical section as
+        # bind repair and identity writes, including the legacy session path.
+        with C._social_session_locks(social_paths):
+            for path, token_key in credentials:
+                try:
+                    saved = C._read_json_dict(path)
+                    if str((saved or {}).get(token_key) or "").strip() == expected_access:
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    success = False
+    except (OSError, TimeoutError):
+        success = False
     return success
 
 
