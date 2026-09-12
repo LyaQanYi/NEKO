@@ -1019,7 +1019,10 @@
                             await completeInitialCommunityHandoff(
                                 url,
                                 initialNativeHandoff.nativeDelegate,
-                                { nativeHandoff: initialNativeHandoffPromise }
+                                {
+                                    nativeHandoff: initialNativeHandoffPromise,
+                                    syncTicket: initialSyncTicket ? null : initialSyncTicketPromise
+                                }
                             );
                         }
                     }

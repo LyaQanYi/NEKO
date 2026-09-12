@@ -3566,7 +3566,10 @@ def test_social_session_init_validates_a_settled_session_once(client, monkeypatc
 
 @pytest.mark.parametrize("replacement", [
     {"access_token": "replacement-token"},
+    {"refresh_token": "replacement-refresh"},
+    {"base_url": "https://another-community.example"},
     {"local_user_id": USER_B_ID},
+    {"auth_source": "legacy"},
 ])
 @pytest.mark.asyncio
 async def test_native_session_snapshot_rejects_a_replacement_after_cloud_validation(
@@ -3581,3 +3584,28 @@ async def test_native_session_snapshot_rejects_a_replacement_after_cloud_validat
     monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: {**_delegate_session(), **replacement})
     snapshot, _failure = await C._native_delegate_session_snapshot()
     assert snapshot is None
+
+
+@pytest.mark.parametrize("missing_metadata", [
+    {"local_user_id": "", "auth_source": ""},
+    {"local_user_id": ""},
+    {"auth_source": ""},
+])
+@pytest.mark.asyncio
+async def test_native_session_snapshot_accepts_concurrent_identity_backfill(
+    monkeypatch, missing_metadata,
+):
+    from main_routers import community_oauth
+
+    async def validated_session_before_backfill():
+        return {
+            "logged_in": True,
+            "snapshot": {**_delegate_session(), **missing_metadata},
+            "auth": {},
+        }
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", validated_session_before_backfill)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    snapshot, failure = await C._native_delegate_session_snapshot()
+    assert snapshot == _delegate_session()
+    assert failure == ""

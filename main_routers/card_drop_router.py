@@ -1453,11 +1453,19 @@ async def _native_delegate_session_snapshot() -> tuple[dict | None, str]:
     if snapshot is None:
         return None, "missing"
     verified = status.get("snapshot") or {}
-    if not community_oauth._status_snapshot_matches(snapshot, verified) or (
-        snapshot.get("auth_source") != verified.get("auth_source")
-    ):
+    credentials_changed = any(
+        snapshot.get(key) != verified.get(key)
+        for key in ("base_url", "access_token", "refresh_token")
+    )
+    identity_changed = any(
+        verified.get(key) and snapshot.get(key) != verified.get(key)
+        for key in ("local_user_id", "auth_source")
+    )
+    if credentials_changed or identity_changed:
         # A local replacement after cloud validation is not itself validated.
         return None, "missing"
+    # A concurrent proof request may have backfilled missing identity metadata
+    # for these same validated credentials. Preserve that verified enrichment.
     if _desktop_session_fingerprint(snapshot):
         return snapshot, ""
 

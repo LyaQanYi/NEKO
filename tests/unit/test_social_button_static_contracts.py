@@ -246,14 +246,20 @@ const fetch = (_url, options) => new Promise((resolve, reject) => {
 
 @pytest.mark.unit
 @pytest.mark.parametrize("ticket_delay_ms", [2000, 5000])
-def test_social_handoff_reuses_only_unsent_tickets_and_starts_fallback_early(ticket_delay_ms):
+@pytest.mark.parametrize("oauth_launch_failed", [False, True])
+def test_social_handoff_reuses_only_unsent_tickets_and_starts_fallback_early(
+    ticket_delay_ms, oauth_launch_failed,
+):
     node = shutil.which("node")
     if not node:
         pytest.skip("node is not installed")
     source = read_js_parts(APP_UI_PATH)
     start = source.index("window.addEventListener('live2d-social-click', async () => {")
     listener = source[start:source.index("// 睡觉按钮（请她离开）", start)]
-    script = "const ticketDelay = " + str(ticket_delay_ms) + ";\n" + r"""
+    script = (
+        "const ticketDelay = " + str(ticket_delay_ms) + ";\n"
+        + "const oauthLaunchFailed = " + str(oauth_launch_failed).lower() + ";\n"
+    ) + r"""
 const assert = require('node:assert/strict');
 let now = 0;
 let nextTimer = 0;
@@ -305,8 +311,10 @@ const fetch = async (url, options = {}) => {
         return new Promise(resolve => setTimeout(() => resolve(response({ native_delegate: 'desktop-delegate' })), 7000));
     }
     if (url === '/api/card-drop/auth-status') {
+        if (oauthLaunchFailed) return response({ logged_in: false });
         return new Promise(resolve => setTimeout(() => resolve(response({ logged_in: true })), Math.max(0, 7000 - now)));
     }
+    if (url === '/api/card-drop/oauth/start' && oauthLaunchFailed) return { ok: false };
     throw new Error('unexpected request: ' + url);
 };
 """ + listener + r"""
@@ -325,6 +333,8 @@ const fetch = async (url, options = {}) => {
     advance(2000); await flush();
     await flow;
     assert.equal(delegateRequests, 1, 'reuse the late initial delegate instead of validating again');
+    assert.equal(requests.filter(request => request.url === '/api/card-drop/oauth/start').length,
+        oauthLaunchFailed ? 1 : 0);
     assert.equal(ticketRequests, ticketDelay > 4000 ? 1 : 2);
     assert.equal(opened.length, 2);
     assert.equal(opened[0].url.hash.includes('native_sync'), ticketDelay <= 4000);
