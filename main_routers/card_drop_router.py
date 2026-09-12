@@ -1555,27 +1555,9 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
     from main_routers import community_oauth as _co
 
     auth = await asyncio.to_thread(_load_auth) or {}
-    # 老会话没存 bind 字段 → 视为已绑（向后兼容，正常单账号场景成立）
-    bind = auth.get("bind") or {"bound": True, "error": None}
-    if not bind.get("bound") and bind.get("error") != _BIND_OWNERSHIP_CONFLICT:
-        # Desktop binds once at callback time and never retries. Redeeming the
-        # ticket used to be the SPA's chance to repair a failed bind, so retry
-        # here before it is spent.
-        bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
-        if bind.get("bound") or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-            # Persist repaired binds and terminal conflicts alike, or
-            # /auth-status keeps reporting the stale transient failure and
-            # every later handoff repeats the bind round trip.
-            await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
-    # _load_auth 和 _oauth_guest_bind 都是 await 点，Desktop 登出、刷新、切号都可能
-    # 在这期间发生。这里无条件复查：会话已变就返回 409，既不下发凭据，也不消费
-    # ticket（留给用户重试）。
-    #
-    # 「复查 → 消费」在 _social_session_lock 里执行：Electron 侧的登出/切号/刷新
-    # 写 social_session.json 时持有同一把锁（见 social-session-refresh.js 的
-    # .lock 协议），所以那次写入要么发生在进锁之前（锁内复读磁盘发现 token 已变，
-    # 返回 409），要么被挡到 ticket 消费完成之后。复查本身仍需走异步的云端校验，
-    # 没法放进同步锁作用域；残余窗口只剩「出锁 → 响应送达」这段本地回环时间。
+    # _load_auth 是 await 点，Desktop 登出、刷新、切号都可能在这期间发生。这里
+    # 无条件复查：会话已变就返回 409，既不下发凭据、不消费 ticket，也不带着旧
+    # token 去做 bind 重试的云端副作用。
     verification_snapshot, _ = await _native_delegate_session_snapshot()
     verification_token = (
         str(verification_snapshot.get("access_token") or "").strip()
@@ -1586,6 +1568,24 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         return JSONResponse(
             {"detail": "desktop_login_required"}, status_code=409, headers=cors
         )
+    # 老会话没存 bind 字段 → 视为已绑（向后兼容，正常单账号场景成立）
+    bind = auth.get("bind") or {"bound": True, "error": None}
+    if not bind.get("bound") and bind.get("error") != _BIND_OWNERSHIP_CONFLICT:
+        # Desktop binds once at callback time and never retries. Redeeming the
+        # ticket used to be the SPA's chance to repair a failed bind, so retry
+        # here before it is spent — but only after the session revalidation
+        # above, so a superseded account never reaches the cloud bind.
+        bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
+        if bind.get("bound") or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+            # Persist repaired binds and terminal conflicts alike, or
+            # /auth-status keeps reporting the stale transient failure and
+            # every later handoff repeats the bind round trip.
+            await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
+    # 「复查 → 消费」在 _social_session_lock 里执行：Electron 侧的登出/切号/刷新
+    # 写 social_session.json 时持有同一把锁（见 social-session-refresh.js 的
+    # .lock 协议），所以那次写入要么发生在进锁之前（锁内复读磁盘发现 token 已变，
+    # 返回 409），要么被挡到 ticket 消费完成之后。bind 重试本身仍是 await 点，
+    # 没法放进同步锁作用域；残余窗口只剩「出锁 → 响应送达」这段本地回环时间。
     consume_outcome = await asyncio.to_thread(
         _consume_sync_ticket_for_verified_session, sync_ticket, access_token
     )

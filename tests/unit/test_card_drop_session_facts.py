@@ -1746,6 +1746,56 @@ def test_social_session_init_refuses_to_consume_when_logout_wins_the_lock(
     assert C._sync_ticket_is_valid(ticket)
 
 
+def test_social_session_init_skips_the_bind_retry_when_the_session_was_replaced(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A superseded account must not reach the cloud bind even in the repair path."""
+    from main_routers import community_oauth
+
+    reads = {"count": 0}
+
+    def aging_snapshot():
+        # The first resolution (outer snapshot) sees account A; every later
+        # read — including the revalidation — sees the replaced session B.
+        reads["count"] += 1
+        token = "desktop-token-a" if reads["count"] <= 2 else "desktop-token-b"
+        return {**_delegate_session(), "access_token": token}
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", aging_snapshot)
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "access_token": "desktop-token-a",
+                "bind": {"bound": False, "error": "cloud_unreachable"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+
+    async def unexpected_guest_bind(_social_base, _access_token):
+        raise AssertionError("a superseded session must not reach the cloud bind")
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", unexpected_guest_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert "desktop-token-a" not in response.text
+    assert C._sync_ticket_is_valid(ticket)
+    persisted = json.loads(auth.read_text(encoding="utf-8"))
+    assert persisted["bind"] == {"bound": False, "error": "cloud_unreachable"}
+
+
 def test_social_session_init_persists_a_terminal_bind_conflict(
     client,
     monkeypatch,
