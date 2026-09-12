@@ -756,6 +756,12 @@ def _persist_repaired_bind(access_token: str, bind: dict) -> None:
                     return
                 if _normalize_auth_source(current.get("auth_source")) != social.get("auth_source"):
                     return
+                # Persist the validated bind's session separately: the mirror
+                # may contain either lagging or ahead-of-social credentials.
+                # Rewriting its tokens here could roll back a newer refresh.
+                current["bind_session_fingerprint"] = _desktop_session_fingerprint(social)
+            else:
+                current.pop("bind_session_fingerprint", None)
             _write_private_json(path, {**current, "bind": bind})
     except (OSError, TimeoutError) as exc:
         logger.warning("card_drop: persist repaired bind failed: %s", exc)
@@ -1369,6 +1375,18 @@ def _issue_sync_ticket_for_session() -> str:
         return _issue_sync_ticket(_desktop_session_fingerprint(_desktop_session_snapshot()))
 
 
+def _load_auth_for_verified_session(snapshot: dict) -> dict | None:
+    """Read the mirror only while the remotely verified session still owns it."""
+    try:
+        with _social_session_locks(_social_session_paths()):
+            auth = _load_auth() or {}
+            if _desktop_session_fingerprint(_desktop_session_snapshot()) != _desktop_session_fingerprint(snapshot):
+                return None
+            return auth
+    except (OSError, TimeoutError):
+        return None
+
+
 def _consume_sync_ticket_for_verified_session(
     sync_ticket: object,
     access_token: str,
@@ -1433,6 +1451,12 @@ async def _native_delegate_session_snapshot() -> tuple[dict | None, str]:
 
     snapshot = await asyncio.to_thread(_desktop_session_snapshot)
     if snapshot is None:
+        return None, "missing"
+    verified = status.get("snapshot") or {}
+    if not community_oauth._status_snapshot_matches(snapshot, verified) or (
+        snapshot.get("auth_source") != verified.get("auth_source")
+    ):
+        # A local replacement after cloud validation is not itself validated.
         return None, "missing"
     if _desktop_session_fingerprint(snapshot):
         return snapshot, ""
@@ -1637,17 +1661,10 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         )
     from main_routers import community_oauth as _co
 
-    auth = await asyncio.to_thread(_load_auth) or {}
-    # _load_auth 是 await 点，Desktop 登出、刷新、切号都可能在这期间发生。这里
-    # 无条件复查：会话已变就返回 409，既不下发凭据、不消费 ticket，也不带着旧
-    # token 去做 bind 重试的云端副作用。
-    verification_snapshot, _ = await _native_delegate_session_snapshot()
-    verification_token = (
-        str(verification_snapshot.get("access_token") or "").strip()
-        if verification_snapshot
-        else ""
-    )
-    if verification_token != access_token:
+    # Fence the local await against logout/refresh/account changes without
+    # repeating the remote identity lookup that just validated this snapshot.
+    auth = await asyncio.to_thread(_load_auth_for_verified_session, snapshot)
+    if auth is None:
         return JSONResponse(
             {"detail": "desktop_login_required"}, status_code=409, headers=cors
         )
@@ -1664,7 +1681,13 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
     )
     bind = auth.get("bind") or {"bound": True, "error": None}
     if auth and not auth_matches_session:
-        bind = {"bound": False, "error": "desktop_bind_state_unavailable"}
+        repaired_bind_matches = (
+            auth.get("bind_session_fingerprint") == _desktop_session_fingerprint(snapshot)
+            and _normalize_local_user_id(auth.get("local_user_id")) == local_user_id
+            and _normalize_auth_source(auth.get("auth_source")) == snapshot["auth_source"]
+        )
+        if not repaired_bind_matches:
+            bind = {"bound": False, "error": "desktop_bind_state_unavailable"}
         # Issuer/client metadata must not leak across this boundary either.
         # The authoritative snapshot or configured defaults supply the issuer.
         auth = {}

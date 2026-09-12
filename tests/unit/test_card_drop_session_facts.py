@@ -2000,12 +2000,10 @@ def test_social_session_init_rejects_a_token_revoked_during_the_bind_retry(
     from main_routers import community_oauth
 
     monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
-    resolve_calls = {"count": 0}
+    state = {"revoked": False}
 
     async def revoking_resolve():
-        resolve_calls["count"] += 1
-        # The third resolution is the post-bind revalidation.
-        logged_in = resolve_calls["count"] <= 2
+        logged_in = not state["revoked"]
         return {
             "logged_in": logged_in,
             "snapshot": _delegate_session() if logged_in else None,
@@ -2028,11 +2026,11 @@ def test_social_session_init_rejects_a_token_revoked_during_the_bind_retry(
     monkeypatch.setattr(C, "_auth_path", lambda: auth)
 
     async def binding_guest_bind(_social_base, _access_token):
+        state["revoked"] = True
         return {"bound": True, "error": None}
 
     monkeypatch.setattr(community_oauth, "_oauth_guest_bind", binding_guest_bind)
     ticket = _issue_sync_ticket(client)
-    resolve_calls["count"] = 0  # Revoke during redemption, after mint validation.
 
     response = client.post(
         "/api/card-drop/social-session-init",
@@ -3494,3 +3492,92 @@ def test_social_session_init_ignores_a_newer_accounts_bind(
     assert response.json()["auth_public_url"] != "https://foreign-issuer.example"
     assert response.json()["client_id"] != "foreign-client"
     assert json.loads(auth_path.read_text()) == mirror
+
+
+@pytest.mark.parametrize("settled_bind", [
+    {"bound": True, "error": None},
+    {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT},
+])
+def test_social_session_init_reuses_a_repaired_bind_with_a_stale_mirror(
+    client, monkeypatch, tmp_path, settled_bind,
+):
+    from main_routers import community_oauth
+
+    auth = tmp_path / "community_auth.json"
+    mirror = {**_delegate_session(access_token="mirror-token"),
+              "refresh_token": "mirror-refresh",
+              "bind": {"bound": False, "error": "cloud_unreachable"}}
+    auth.write_text(json.dumps(mirror), encoding="utf-8")
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    binds = []
+
+    async def bind_account(_base, access):
+        binds.append(access)
+        return settled_bind
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", bind_account)
+    for _ in range(2):
+        response = client.post(
+            "/api/card-drop/social-session-init",
+            headers={"Origin": "https://community.example"},
+            json={"sync_ticket": _issue_sync_ticket(client)},
+        )
+        assert response.status_code == 200
+        assert response.json()["bind"] == settled_bind
+    assert binds == ["desktop-token-a"]
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: _delegate_session(
+        access_token="rotated-authoritative",
+    ))
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": _issue_sync_ticket(client)},
+    )
+    assert response.status_code == 200
+    assert binds == ["desktop-token-a", "rotated-authoritative"]
+    # Repairing a bind must not roll back a mirror whose credentials may have
+    # advanced first during a same-account two-file publication.
+    persisted = json.loads(auth.read_text(encoding="utf-8"))
+    assert persisted["access_token"] == mirror["access_token"]
+    assert persisted["refresh_token"] == mirror["refresh_token"]
+
+
+def test_social_session_init_validates_a_settled_session_once(client, monkeypatch):
+    from main_routers import community_oauth
+
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    validations = []
+
+    async def validate_session():
+        validations.append(True)
+        return {"logged_in": True, "snapshot": _delegate_session(), "auth": {}}
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", validate_session)
+    ticket = _issue_sync_ticket(client)
+    validations.clear()
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"}, json={"sync_ticket": ticket},
+    )
+    assert response.status_code == 200
+    assert len(validations) == 1
+
+
+@pytest.mark.parametrize("replacement", [
+    {"access_token": "replacement-token"},
+    {"local_user_id": USER_B_ID},
+])
+@pytest.mark.asyncio
+async def test_native_session_snapshot_rejects_a_replacement_after_cloud_validation(
+    monkeypatch, replacement,
+):
+    from main_routers import community_oauth
+
+    async def validated_previous_session():
+        return {"logged_in": True, "snapshot": _delegate_session(), "auth": {}}
+
+    monkeypatch.setattr(community_oauth, "resolve_saved_oauth_status", validated_previous_session)
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: {**_delegate_session(), **replacement})
+    snapshot, _failure = await C._native_delegate_session_snapshot()
+    assert snapshot is None
