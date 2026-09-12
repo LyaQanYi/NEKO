@@ -1050,6 +1050,60 @@ def test_persist_oauth_credentials_rolls_back_the_tokens_seen_under_the_lock(
 
 
 @pytest.mark.unit
+def test_persist_oauth_credentials_leaves_an_untouched_social_file_alone(
+    tmp_path,
+    monkeypatch,
+):
+    """Rollback must not rewrite (and risk destroying) the social file it never modified."""
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    old_auth = {"access_token": "old-access", "refresh_token": "old-refresh"}
+    old_social = {
+        "token": "old-access",
+        "access_token": "old-access",
+        "local_user_id": USER_ID,
+        "auth_source": "oauth",
+    }
+    auth.write_text(json.dumps(old_auth), encoding="utf-8")
+    social.write_text(json.dumps(old_social), encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_save_auth_unlocked", lambda *_args, **_kwargs: False)
+
+    social_writes = []
+    real_write = C._write_private_json
+
+    def write_private_json(path, data):
+        if path == social:
+            social_writes.append(data)
+            raise OSError("rollback must not rewrite the untouched social file")
+        real_write(path, data)
+
+    monkeypatch.setattr(C, "_write_private_json", write_private_json)
+    cleared = []
+    monkeypatch.setattr(C, "_clear_auth", lambda: cleared.append(True) or True)
+
+    saved = O._persist_oauth_credentials(
+        {"access_token": "new-access", "refresh_token": "new-refresh"},
+        social_base="https://community.example",
+        access_token="new-access",
+        refresh_token="new-refresh",
+        local_user_id=USER_ID,
+        auth_public_url="https://auth.example",
+        client_id="neko-servers-desktop-dev",
+    )
+
+    assert saved is False
+    assert social_writes == []
+    # A failed save leaves the old session byte-identical; rewriting it could
+    # fail too and make _clear_auth() delete a still-usable login.
+    assert cleared == []
+    assert json.loads(social.read_text(encoding="utf-8")) == old_social
+    assert json.loads(auth.read_text(encoding="utf-8")) == old_auth
+
+
+@pytest.mark.unit
 def test_persist_oauth_credentials_clears_credentials_when_rollback_fails(
     tmp_path,
     monkeypatch,

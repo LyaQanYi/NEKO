@@ -534,7 +534,13 @@ def _persist_oauth_credentials(
                 return True
 
             for path, existed, payload in snapshots:
-                if path == social_path and social_saved:
+                # social_saved is necessarily False here: either the social
+                # writer was never reached, or its atomic temp+rename write
+                # failed and left the old file byte-identical. Rewriting it
+                # cannot restore anything, but its failure would flip
+                # rollback_ok and make _clear_auth() delete a still-usable
+                # session, so leave the file alone.
+                if path == social_path:
                     continue
                 try:
                     if existed and payload is not None:
