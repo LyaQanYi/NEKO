@@ -1732,8 +1732,8 @@ def test_social_session_init_refuses_to_consume_when_logout_wins_the_lock(
             state["token"] = ""
             yield
 
-    monkeypatch.setattr(C, "_social_session_lock", logout_under_lock)
     ticket = _issue_sync_ticket(client)
+    monkeypatch.setattr(C, "_social_session_lock", logout_under_lock)
 
     response = client.post(
         "/api/card-drop/social-session-init",
@@ -1791,6 +1791,8 @@ def test_persist_repaired_bind_accepts_a_stale_auth_mirror(tmp_path, monkeypatch
         json.dumps(
             {
                 "access_token": "mirror-stale-token",
+                "local_user_id": USER_A_ID,
+                "auth_source": "oauth",
                 "bind": {"bound": False, "error": "cloud_unreachable"},
             }
         ),
@@ -1824,6 +1826,8 @@ def test_persist_repaired_bind_accepts_a_stale_auth_mirror(tmp_path, monkeypatch
         json.dumps(
             {
                 "access_token": "mirror-stale-token",
+                "local_user_id": USER_A_ID,
+                "auth_source": "oauth",
                 "bind": {"bound": False, "error": "cloud_unreachable"},
             }
         ),
@@ -2019,6 +2023,7 @@ def test_social_session_init_skips_the_bind_retry_when_the_session_was_replaced(
 
     monkeypatch.setattr(community_oauth, "_oauth_guest_bind", unexpected_guest_bind)
     ticket = _issue_sync_ticket(client)
+    reads["count"] = 0  # The issuing snapshot is separate from redemption.
 
     response = client.post(
         "/api/card-drop/social-session-init",
@@ -3343,3 +3348,30 @@ async def test_archive_pick_excludes_trust_arbitration_losers(
     assert payload["facts"] == []
     assert payload["archiveRawCount"] == 1
     assert payload["archiveFilteredCount"] == 0
+
+
+def test_repaired_bind_cannot_change_a_newer_account_mirror(tmp_path, monkeypatch):
+    auth = tmp_path / "community_auth.json"
+    mirror = {"access_token": "account-b", "local_user_id": USER_B_ID,
+              "auth_source": "oauth", "bind": {"bound": False, "error": "B-error"}}
+    auth.write_text(json.dumps(mirror), encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: _delegate_session())
+    C._persist_repaired_bind(_delegate_session()["access_token"], {"bound": True})
+    assert json.loads(auth.read_text()) == mirror
+
+
+@pytest.mark.parametrize("initial_session", [None, "account-a"])
+def test_old_sync_ticket_cannot_disclose_a_later_account(client, monkeypatch, initial_session):
+    snapshot = _delegate_session() if initial_session else None
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
+    ticket = _issue_sync_ticket(client)
+    snapshot = {**_delegate_session(), "local_user_id": USER_B_ID, "access_token": "account-b"}
+    response = client.post("/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"}, json={"sync_ticket": ticket})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "invalid_sync_ticket"}
+    # The low-level final consumer also checks the minting session, closing a
+    # switch after preflight and preserving guest-bind-only tickets' purpose.
+    assert C._consume_sync_ticket_for_verified_session(ticket, "account-b") == "invalid"

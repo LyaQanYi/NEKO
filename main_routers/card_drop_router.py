@@ -58,7 +58,7 @@ _FACT_QUERY_MAX_EXCLUSIONS = 200
 _FACT_QUERY_MAX_EXCLUSION_LENGTH = 128
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _SUPPORTED_AUTH_SOURCES = frozenset({"legacy", "oauth"})
-_native_sync_tickets: dict[str, float] = {}
+_native_sync_tickets: dict[str, dict] = {}
 # digest -> {expires_at, scopes, local_user_id, audience, session_fingerprint}
 _native_delegates: dict[str, dict] = {}
 # /sync-ticket 在事件循环线程签发，social-session-init 经 asyncio.to_thread 在
@@ -118,36 +118,42 @@ def _prune_sync_tickets(now: float | None = None) -> None:
     current = time.monotonic() if now is None else now
     expired = [
         digest
-        for digest, expires_at in _native_sync_tickets.items()
-        if expires_at <= current
+        for digest, entry in _native_sync_tickets.items()
+        if entry["expires_at"] <= current
     ]
     for digest in expired:
         _native_sync_tickets.pop(digest, None)
 
 
-def _issue_sync_ticket() -> str:
+def _issue_sync_ticket(session_fingerprint: str = "") -> str:
     now = time.monotonic()
     with _native_sync_tickets_lock:
         _prune_sync_tickets(now)
         while len(_native_sync_tickets) >= _SYNC_TICKET_MAX_ACTIVE:
-            oldest = min(_native_sync_tickets, key=_native_sync_tickets.get)
+            oldest = min(_native_sync_tickets, key=lambda key: _native_sync_tickets[key]["expires_at"])
             _native_sync_tickets.pop(oldest, None)
         ticket = secrets.token_urlsafe(32)
-        _native_sync_tickets[_sync_ticket_digest(ticket)] = now + _SYNC_TICKET_TTL_SEC
+        _native_sync_tickets[_sync_ticket_digest(ticket)] = {
+            "expires_at": now + _SYNC_TICKET_TTL_SEC,
+            "session_fingerprint": session_fingerprint,
+        }
     return ticket
 
 
-def _sync_ticket_is_valid(value: object) -> bool:
+def _sync_ticket_is_valid(value: object, *, session_fingerprint: str | None = None) -> bool:
     ticket = _normalize_sync_ticket(value)
     if not ticket:
         return False
     now = time.monotonic()
     with _native_sync_tickets_lock:
         _prune_sync_tickets(now)
-        return _native_sync_tickets.get(_sync_ticket_digest(ticket), 0) > now
+        entry = _native_sync_tickets.get(_sync_ticket_digest(ticket))
+        return bool(entry and (session_fingerprint is None or (
+            session_fingerprint and entry["session_fingerprint"] == session_fingerprint
+        )))
 
 
-def _consume_sync_ticket(value: object) -> bool:
+def _consume_sync_ticket(value: object, *, session_fingerprint: str | None = None) -> bool:
     ticket = _normalize_sync_ticket(value)
     if not ticket:
         return False
@@ -155,8 +161,13 @@ def _consume_sync_ticket(value: object) -> bool:
     with _native_sync_tickets_lock:
         _prune_sync_tickets(now)
         digest = _sync_ticket_digest(ticket)
-        expires_at = _native_sync_tickets.pop(digest, 0)
-    return expires_at > now
+        entry = _native_sync_tickets.get(digest)
+        if not entry or (session_fingerprint is not None and (
+            not session_fingerprint or entry["session_fingerprint"] != session_fingerprint
+        )):
+            return False
+        _native_sync_tickets.pop(digest)
+        return True
 
 
 def _prune_native_delegates(now: float | None = None) -> None:
@@ -737,6 +748,14 @@ def _persist_repaired_bind(access_token: str, bind: dict) -> None:
                 authoritative = str((social or {}).get("access_token") or "").strip()
                 if authoritative != access_token:
                     return
+                # A two-file account switch can leave a *newer* auth mirror
+                # beside the old social file. Only a matching identity proves
+                # that this is a lagging refresh mirror for the same account.
+                mirror_user = _normalize_local_user_id(current.get("local_user_id"))
+                if not mirror_user or mirror_user != (social or {}).get("local_user_id"):
+                    return
+                if _normalize_auth_source(current.get("auth_source")) != social.get("auth_source"):
+                    return
             _write_private_json(path, {**current, "bind": bind})
     except (OSError, TimeoutError) as exc:
         logger.warning("card_drop: persist repaired bind failed: %s", exc)
@@ -959,6 +978,8 @@ def _clear_auth() -> bool:
         logger.warning("card_drop: clear credentials failed to fence writers: %s", exc)
     if success:
         _clear_native_delegates()
+        with _native_sync_tickets_lock:
+            _native_sync_tickets.clear()
     return success
 
 
@@ -1313,11 +1334,10 @@ async def auth_status_endpoint(request: Request):
 async def sync_ticket_endpoint(request: Request):
     """Issue a short-lived ticket readable only by the local NEKO page.
 
-    The ticket transitively redeems the Desktop OAuth bearer, so minting gets
-    the same browser boundary as /native-delegate: Fetch Metadata proving the
-    request came from this server's own page. A headerless native client can
-    no longer mint one; social-session-init then only ever consumes tickets
-    that originated from the trusted local UI.
+    Minting uses the same browser boundary as /native-delegate, with Fetch
+    Metadata and local Origin checks. These headers do not authenticate raw
+    local processes, which can forge them. Bearer redemption additionally
+    requires the ticket to match its persisted issuing session.
     """
     if not _local_ui_request_source_allowed(request):
         return JSONResponse(
@@ -1325,10 +1345,22 @@ async def sync_ticket_endpoint(request: Request):
             status_code=403,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
+    try:
+        ticket = await asyncio.to_thread(_issue_sync_ticket_for_session)
+    except (OSError, TimeoutError):
+        return JSONResponse(
+            {"detail": "desktop_session_busy"}, status_code=503,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
     return JSONResponse(
-        {"sync_ticket": _issue_sync_ticket(), "expires_in": _SYNC_TICKET_TTL_SEC},
+        {"sync_ticket": ticket, "expires_in": _SYNC_TICKET_TTL_SEC},
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
+
+
+def _issue_sync_ticket_for_session() -> str:
+    with _social_session_locks(_social_session_paths()):
+        return _issue_sync_ticket(_desktop_session_fingerprint(_desktop_session_snapshot()))
 
 
 def _consume_sync_ticket_for_verified_session(
@@ -1340,20 +1372,19 @@ def _consume_sync_ticket_for_verified_session(
     Returns "ok", "changed" (desktop session was replaced / lock busy; ticket
     preserved), or "invalid" (the ticket itself is spent).
     """
-    social_path = _social_session_path()
-    if social_path is None:
-        return "ok" if _consume_sync_ticket(sync_ticket) else "invalid"
     try:
         # The Electron main process takes this same lock for logout / account
         # switch / token refresh, so its write either completed before this
         # scope (the re-read below mismatches -> 409) or it waits until the
         # ticket is consumed and the response is already being queued.
-        with _social_session_lock(social_path):
+        with _social_session_locks(_social_session_paths()):
             current = _desktop_session_snapshot()
             current_token = str((current or {}).get("access_token") or "").strip()
             if current_token != access_token:
                 return "changed"
-            return "ok" if _consume_sync_ticket(sync_ticket) else "invalid"
+            return "ok" if _consume_sync_ticket(
+                sync_ticket, session_fingerprint=_desktop_session_fingerprint(current)
+            ) else "invalid"
     except (OSError, TimeoutError) as exc:
         # A concurrent writer is holding the lock; assume the session is being
         # replaced and keep the ticket for a retry.
@@ -1547,10 +1578,8 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
     is consumed only once the response is known to be deliverable.
     """
     if not (request.headers.get("origin") or "").strip():
-        # CORS cannot authenticate a non-browser caller, and the ticket must
-        # never be redeemable by one: /sync-ticket only mints from the local
-        # UI's browser context, so a headerless native client holds no ticket
-        # and this Origin requirement rejects its direct calls.
+        # Require the browser-origin contract even though raw local clients
+        # can forge Origin; this check alone is not process authentication.
         return JSONResponse(
             {"detail": "origin_required"},
             status_code=403,
@@ -1588,6 +1617,10 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         return JSONResponse(
             {"detail": "legacy_session_not_supported"}, status_code=409, headers=cors
         )
+    if not _sync_ticket_is_valid(
+        sync_ticket, session_fingerprint=_desktop_session_fingerprint(snapshot)
+    ):
+        return JSONResponse({"detail": "invalid_sync_ticket"}, status_code=403, headers=cors)
     snapshot_base = str(snapshot.get("base_url") or "").strip().rstrip("/")
     if snapshot_base and not _same_originish(snapshot_base, _social_base_url()):
         # The saved login belongs to another community; refuse rather than ship
