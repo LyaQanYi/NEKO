@@ -1649,8 +1649,23 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         return JSONResponse(
             {"detail": "desktop_login_required"}, status_code=409, headers=cors
         )
-    # 老会话没存 bind 字段 → 视为已绑（向后兼容，正常单账号场景成立）
+    # The auth mirror may already belong to a newer login while the social
+    # file is still authoritative for this one. Never reuse its bind outcome.
+    # Older mirrors without identity metadata are still tied by the exact
+    # bearer; a missing bind field retains the existing compatibility default.
+    auth_matches_session = (
+        str(auth.get("access_token") or "").strip() == access_token
+        and (not auth.get("local_user_id")
+             or _normalize_local_user_id(auth["local_user_id"]) == local_user_id)
+        and (not auth.get("auth_source")
+             or _normalize_auth_source(auth["auth_source"]) == snapshot["auth_source"])
+    )
     bind = auth.get("bind") or {"bound": True, "error": None}
+    if auth and not auth_matches_session:
+        bind = {"bound": False, "error": "desktop_bind_state_unavailable"}
+        # Issuer/client metadata must not leak across this boundary either.
+        # The authoritative snapshot or configured defaults supply the issuer.
+        auth = {}
     bind_retried = False
     if not bind.get("bound") and bind.get("error") != _BIND_OWNERSHIP_CONFLICT:
         # Desktop binds once at callback time and never retries. Redeeming the

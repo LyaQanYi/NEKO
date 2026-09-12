@@ -86,9 +86,10 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "const initialNativeHandoffPromise = fetchNativeDelegate();" in listener
     assert "const [initialSyncTicket, clientId] = await Promise.all([" in listener
     assert "applyNativeSyncTicket(targetUrl, initialSyncTicket);" in listener
-    assert listener.count("setTimeout(() => controller.abort(), 4000)") == 2
+    assert listener.count("setTimeout(() => controller.abort(), 120000)") == 2
+    assert "waitForInitialSyncTicket(initialSyncTicketPromise)" in listener
     assert listener.count("signal: controller.signal") == 2
-    assert listener.count("clearTimeout(timeoutId)") == 2
+    assert listener.count("clearTimeout(timeoutId)") == 3
     assert "native session sync ticket fetch failed: HTTP" in listener
     assert "native delegate fetch failed (non-fatal):" in listener
     assert "targetUrl.searchParams.set('cid', clientId)" in listener
@@ -187,6 +188,62 @@ def test_social_open_request_is_deduped_before_fetching_config():
         r"url,\s*initialNativeHandoff\.nativeDelegate\s*\);\s*\}",
         listener,
     )
+
+
+@pytest.mark.unit
+def test_slow_social_proof_survives_the_initial_window_navigation_budget():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    source = read_js_parts(APP_UI_PATH)
+    helpers = "\n".join(_extract_js_function(source, signature) + ";" for signature in (
+        "const fetchNativeSyncTicket = async () =>",
+        "const waitForInitialSyncTicket = async (ticketPromise) =>",
+    ))
+    script = r"""
+const assert = require('node:assert/strict');
+const timers = new Map();
+let timerId = 0;
+let now = 0;
+const setTimeout = (callback, delay) => {
+    const id = ++timerId;
+    timers.set(id, { callback, at: now + delay });
+    return id;
+};
+const clearTimeout = id => timers.delete(id);
+const advance = elapsed => {
+    now += elapsed;
+    for (const [id, timer] of [...timers]) {
+        if (timer.at <= now) { timers.delete(id); timer.callback(); }
+    }
+};
+let finishFetch;
+let signal;
+const fetch = (_url, options) => new Promise((resolve, reject) => {
+    signal = options.signal;
+    signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    finishFetch = () => resolve({ ok: true, json: async () => ({ sync_ticket: 'late-ticket' }) });
+});
+""" + helpers + r"""
+(async () => {
+    const ticket = fetchNativeSyncTicket();
+    const initial = waitForInitialSyncTicket(ticket);
+    advance(4000);
+    assert.equal(await initial, '', 'the community may open before slow validation finishes');
+    assert.equal(signal.aborted, false, 'navigation must not cancel proof issuance');
+    advance(1000);
+    finishFetch();
+    assert.equal(await ticket, 'late-ticket');
+    assert.equal(timers.size, 0, 'successful completion cleans both deadlines');
+    const timedOut = fetchNativeSyncTicket();
+    advance(120000);
+    assert.equal(await timedOut, '');
+    assert.equal(signal.aborted, true, 'the longer remote validation wait remains bounded');
+    assert.equal(timers.size, 0);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.unit

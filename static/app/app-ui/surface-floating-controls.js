@@ -689,7 +689,10 @@
             };
             const fetchNativeSyncTicket = async () => {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 4000);
+                // Both proof endpoints may validate for 60s and refresh for
+                // another 30s. Keep the request alive past the initial window
+                // navigation budget so the completed handoff can still arrive.
+                const timeoutId = setTimeout(() => controller.abort(), 120000);
                 try {
                     const response = await fetch('/api/card-drop/sync-ticket', {
                         cache: 'no-store',
@@ -710,7 +713,7 @@
             };
             const fetchNativeDelegate = async () => {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 4000);
+                const timeoutId = setTimeout(() => controller.abort(), 120000);
                 try {
                     const response = await fetch('/api/card-drop/native-delegate', {
                         cache: 'no-store',
@@ -749,6 +752,17 @@
                 } catch (error) {
                     console.warn('[social] client_id fetch failed (non-fatal):', error);
                     return '';
+                }
+            };
+            const waitForInitialSyncTicket = async (ticketPromise) => {
+                let timeoutId;
+                try {
+                    return await Promise.race([
+                        ticketPromise,
+                        new Promise(resolve => { timeoutId = setTimeout(() => resolve(''), 4000); })
+                    ]);
+                } finally {
+                    clearTimeout(timeoutId);
                 }
             };
             const applyNativeSyncTicket = (targetUrl, syncTicket) => {
@@ -867,7 +881,7 @@
                 const initialClientIdPromise = fetchSocialClientId();
                 const initialNativeHandoffPromise = fetchNativeDelegate();
                 const [initialSyncTicket, clientId] = await Promise.all([
-                    initialSyncTicketPromise,
+                    waitForInitialSyncTicket(initialSyncTicketPromise),
                     initialClientIdPromise
                 ]);
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，

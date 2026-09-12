@@ -2112,7 +2112,7 @@ def test_social_session_init_does_not_rebind_a_settled_desktop_client(
         {"bound": True, "error": None},
         {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT},
     ):
-        auth.write_text(json.dumps({"bind": bind}), encoding="utf-8")
+        auth.write_text(json.dumps({**_delegate_session(), "bind": bind}), encoding="utf-8")
         ticket = _issue_sync_ticket(client)
 
         response = client.post(
@@ -3411,3 +3411,40 @@ def test_sync_ticket_is_redeemable_after_refreshing_an_expired_desktop_session(
     assert response.status_code == 200
     assert response.json()["access_token"] == "refreshed-desktop-token"
     assert not C._sync_ticket_is_valid(ticket)
+
+
+@pytest.mark.parametrize("foreign_bind", [
+    {"bound": True, "error": None},
+    {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT},
+])
+def test_social_session_init_ignores_a_newer_accounts_bind(
+    client, monkeypatch, tmp_path, foreign_bind,
+):
+    from main_routers import community_oauth
+
+    auth_path = tmp_path / "community_auth.json"
+    mirror = {**_delegate_session(local_user_id=USER_B_ID, access_token="account-b"),
+              "auth_public_url": "https://foreign-issuer.example", "client_id": "foreign-client",
+              "bind": foreign_bind}
+    auth_path.write_text(json.dumps(mirror), encoding="utf-8")
+    monkeypatch.setattr(C, "_auth_path", lambda: auth_path)
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
+    monkeypatch.setattr(C, "_desktop_session_snapshot", _delegate_session)
+    bound = []
+
+    async def bind_current_account(_base, token):
+        bound.append(token)
+        return {"bound": False, "error": "cloud_unreachable"}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", bind_current_account)
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": _issue_sync_ticket(client)},
+    )
+    assert response.status_code == 200
+    assert bound == ["desktop-token-a"]
+    assert response.json()["bind"] == {"bound": False, "error": "cloud_unreachable"}
+    assert response.json()["auth_public_url"] != "https://foreign-issuer.example"
+    assert response.json()["client_id"] != "foreign-client"
+    assert json.loads(auth_path.read_text()) == mirror
