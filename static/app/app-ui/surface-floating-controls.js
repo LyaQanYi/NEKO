@@ -754,12 +754,12 @@
                     return '';
                 }
             };
-            const waitForInitialSyncTicket = async (ticketPromise) => {
+            const waitForInitialNativeProof = async (proofPromise, fallback = '') => {
                 let timeoutId;
                 try {
                     return await Promise.race([
-                        ticketPromise,
-                        new Promise(resolve => { timeoutId = setTimeout(() => resolve(''), 4000); })
+                        proofPromise,
+                        new Promise(resolve => { timeoutId = setTimeout(() => resolve(fallback), 4000); })
                     ]);
                 } finally {
                     clearTimeout(timeoutId);
@@ -789,21 +789,25 @@
                 targetUrl.hash = hash;
                 return targetUrl;
             };
-            const completeInitialCommunityHandoff = async (targetUrl, initialNativeDelegate = '') => {
+            const completeInitialCommunityHandoff = async (targetUrl, initialNativeDelegate = '', pendingProofs = {}) => {
                 // 已登录快速路径直接复用并行取得的 delegate。仅在状态接口失败、
                 // 但 auth-status 兜底确认已登录时重试一次，避免重复解析 OAuth 会话。
                 let nativeDelegate = initialNativeDelegate;
+                if (!nativeDelegate && pendingProofs.nativeHandoff) {
+                    nativeDelegate = (await pendingProofs.nativeHandoff).nativeDelegate;
+                }
                 if (!nativeDelegate) {
                     const retryHandoff = await fetchNativeDelegate();
                     nativeDelegate = retryHandoff.nativeDelegate;
                 }
                 if (nativeDelegate) {
-                    // 二次导航使用新签发的 native_sync，并与 delegate 一次性交付。
-                    // 即使首次页面尚未读取 fragment 而被替换，也不会丢失同步能力；
-                    // 同时不会重放首次导航中的一次性票据。
-                    const delegateTargetUrl = await attachNativeSyncTicket(
-                        new URL(targetUrl, window.location.href)
-                    );
+                    // A ticket omitted from the first navigation is still
+                    // unused. Reuse its late result; only mint again when the
+                    // first ticket was already sent or issuance actually failed.
+                    const unusedTicket = pendingProofs.syncTicket ? await pendingProofs.syncTicket : '';
+                    const delegateTargetUrl = unusedTicket
+                        ? applyNativeSyncTicket(new URL(targetUrl, window.location.href), unusedTicket)
+                        : await attachNativeSyncTicket(new URL(targetUrl, window.location.href));
                     attachNativeDelegate(delegateTargetUrl, nativeDelegate);
                     if (isElectron) {
                         if (!openElectronSocialWindow(delegateTargetUrl.toString())) {
@@ -880,8 +884,12 @@
                 const initialSyncTicketPromise = fetchNativeSyncTicket();
                 const initialClientIdPromise = fetchSocialClientId();
                 const initialNativeHandoffPromise = fetchNativeDelegate();
+                const initialNativeHandoffReadiness = waitForInitialNativeProof(
+                    initialNativeHandoffPromise,
+                    { nativeDelegate: '', loginState: 'unknown' }
+                );
                 const [initialSyncTicket, clientId] = await Promise.all([
-                    waitForInitialSyncTicket(initialSyncTicketPromise),
+                    waitForInitialNativeProof(initialSyncTicketPromise),
                     initialClientIdPromise
                 ]);
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
@@ -902,7 +910,7 @@
                 } else if (!navigateBrowserPopup(url, { keepReference: true })) {
                     throw new Error('popup blocked');
                 }
-                const initialNativeHandoff = await initialNativeHandoffPromise;
+                const initialNativeHandoff = await initialNativeHandoffReadiness;
                 let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';
                 if (initialNativeHandoff.loginState === 'unknown') {
                     try {
@@ -1010,14 +1018,19 @@
                         } else {
                             await completeInitialCommunityHandoff(
                                 url,
-                                initialNativeHandoff.nativeDelegate
+                                initialNativeHandoff.nativeDelegate,
+                                { nativeHandoff: initialNativeHandoffPromise }
                             );
                         }
                     }
                 } else {
                     await completeInitialCommunityHandoff(
                         url,
-                        initialNativeHandoff.nativeDelegate
+                        initialNativeHandoff.nativeDelegate,
+                        {
+                            nativeHandoff: initialNativeHandoffPromise,
+                            syncTicket: initialSyncTicket ? null : initialSyncTicketPromise
+                        }
                     );
                 }
                 return;
