@@ -1059,14 +1059,12 @@
                     let lateTicket = await pendingProofs.syncTicket;
                     // 主进程会签一对新的票据和 delegate 写进窗口当前页，首次签发为空也不影响。
                     const desktopHandoff = await requestDesktopHandoff();
+                    if (desktopHandoff && desktopHandoff.handled) return;
                     if (desktopHandoff) {
-                        if (!desktopHandoff.handled) {
-                            console.warn('[social] desktop community handoff found no community window');
-                        }
-                        return;
+                        console.warn('[social] desktop community handoff found no community window');
                     }
-                    // 旧版 NEKO-PC 没有桥：退回原行为。首次签发为空（瞬时错误）时照旧重签一次，
-                    // 再把票据随同一 delegate 再 window.open 一次。
+                    // 旧版 NEKO-PC 没有桥、或桥没送达（没找到窗口/调用失败）：退回原行为。
+                    // 首次签发为空（瞬时错误）时照旧重签一次，再把票据随同一 delegate 再 window.open 一次。
                     if (!lateTicket) lateTicket = await fetchNativeSyncTicket();
                     if (!lateTicket) return;
                     const ticketTargetUrl = applyNativeSyncTicket(new URL(targetUrl, window.location.href), lateTicket);
@@ -1098,12 +1096,16 @@
                     attachNativeDelegate(delegateTargetUrl, nativeDelegate);
                     if (isElectron) {
                         // 对已开的 neko-social 再 window.open 落不到内置窗口上（#3450）：
-                        // 交给主进程写进社区窗口当前页的哈希。旧版 NEKO-PC 没有桥时保留原行为。
+                        // 交给主进程写进社区窗口当前页的哈希。旧版 NEKO-PC 没有桥、或桥没送达
+                        // （没找到窗口/调用失败）时保留原行为，随初始 URL 交付。
                         const desktopHandoff = await requestDesktopHandoff();
-                        if (!desktopHandoff && !openElectronSocialWindow(delegateTargetUrl.toString())) {
-                            console.warn('[social] failed to refresh Electron community window with native delegate');
-                        } else if (desktopHandoff && !desktopHandoff.handled) {
-                            console.warn('[social] desktop community handoff found no community window');
+                        if (!desktopHandoff || !desktopHandoff.handled) {
+                            if (desktopHandoff) {
+                                console.warn('[social] desktop community handoff found no community window');
+                            }
+                            if (!openElectronSocialWindow(delegateTargetUrl.toString())) {
+                                console.warn('[social] failed to refresh Electron community window with native delegate');
+                            }
                         }
                     } else if (popupRef) {
                         navigateBrowserPopup(delegateTargetUrl.toString());

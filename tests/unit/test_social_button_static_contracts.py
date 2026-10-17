@@ -489,6 +489,19 @@ const hashOf = raw => new URLSearchParams(new URL(raw).hash.slice(1));
     assert.equal(bridgeCalls.length, 2, 'an empty first ticket must not end the handoff');
     assert.equal(getSocialOpenState().inFlight, false);
 
+    // New NEKO-PC, but the late-ticket handoff is not delivered (window gone or bridge
+    // failed): keep the URL fallback so the ticket still reaches a community window.
+    bridgeCalls.length = 0;
+    bridgeResults = [{ handled: false }, { handled: false }];
+    getSocialOpenState().windowRef = null;
+    openedUrls.length = 0;
+    await onClick();
+    assert.equal(bridgeCalls.length, 2);
+    assert.equal(openedUrls.length, 2, 'an undelivered bridge handoff falls back to window.open');
+    assert.equal(hashOf(openedUrls[1]).get('native_sync'), TICKET);
+    assert.equal(hashOf(openedUrls[1]).get('native_delegate'), DELEGATE);
+    assert.equal(getSocialOpenState().inFlight, false);
+
     // Old NEKO-PC (no bridge): the late ticket rides a second window.open with the same delegate.
     // Clear the window left by the previous scenario so the real focus branch does not short-circuit.
     window.nekoSocial = null;
