@@ -1086,10 +1086,17 @@
                 targetUrl,
                 await fetchNativeSyncTicket()
             );
+            const delegateTransportAllowed = (targetUrl) => {
+                // 明文 HTTP 只允许回环地址，与后端 proof_transport_allowed 同一规则。
+                if (targetUrl.protocol === 'https:') return true;
+                const host = targetUrl.hostname.toLowerCase();
+                return targetUrl.protocol === 'http:'
+                    && (host === 'localhost' || host === '127.0.0.1' || host === '[::1]');
+            };
             const attachNativeDelegate = (targetUrl, nativeDelegate) => {
                 const hashParams = new URLSearchParams(targetUrl.hash.replace(/^#/, ''));
                 // Scoped credits/facts proof — never the platform OAuth bearer.
-                if (nativeDelegate) {
+                if (nativeDelegate && delegateTransportAllowed(targetUrl)) {
                     hashParams.set('native_delegate', nativeDelegate);
                 }
                 const hash = hashParams.toString();

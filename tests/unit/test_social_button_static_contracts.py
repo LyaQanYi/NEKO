@@ -348,9 +348,10 @@ const isResolvedDarkTheme = () => false;
 const registerSocialThemeTarget = () => null;
 const queueSocialThemeSync = () => {};
 const DELEGATE = 'd'.repeat(43);
+let socialBaseUrl = 'https://community.example';
 const response = body => ({ ok: true, status: 200, json: async () => body });
 const fetch = async url => {
-    if (url === '/api/system/social/config') return response({ social_base_url: 'https://community.example' });
+    if (url === '/api/system/social/config') return response({ social_base_url: socialBaseUrl });
     if (url === '/api/system/client-id') return response({ client_id: '' });
     if (url === '/api/card-drop/sync-ticket') {
         // The ticket settles after the delegate; both still fit the first URL.
@@ -379,6 +380,28 @@ const fetch = async url => {
     assert.equal(bridgeCalls, 2);
     assert.equal(openedUrls.length, 1, 'an open community window is refreshed through the bridge');
     assert.equal(getSocialOpenState().inFlight, false, 'the open lock is released after the handoff');
+
+    // A plaintext community base off loopback must never receive the delegate
+    // in its URL; loopback HTTP (local development) still does.
+    bridgeResult = { handled: false };
+    for (const [base, expectDelegate] of [
+        ['http://community.example', false],
+        ['http://localhost:3000', true],
+        ['http://127.0.0.1:3000', true],
+    ]) {
+        socialBaseUrl = base;
+        window.__nekoSocialOpenState = null;
+        openedUrls.length = 0;
+        await onClick();
+        assert.equal(openedUrls.length, 1, base);
+        const opened = new URL(openedUrls[0]);
+        assert.equal(opened.origin, new URL(base).origin);
+        assert.equal(
+            new URLSearchParams(opened.hash.slice(1)).get('native_delegate'),
+            expectDelegate ? DELEGATE : null,
+            base,
+        );
+    }
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
     result = run_node_stdin(node, script, capture_output=True, check=False)
