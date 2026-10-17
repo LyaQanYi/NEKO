@@ -519,6 +519,23 @@
             return true;
         }
 
+        // NEKO-PC 主进程把新签的 native_delegate 写进已开社区窗口当前页的哈希并聚焦它。
+        // 返回 null 表示宿主没有这个桥（浏览器或旧版 NEKO-PC），调用方走原有流程；
+        // 否则返回 { handled }，handled=false 表示主进程那边没有社区窗口。
+        async function requestDesktopCommunityHandoff() {
+            const bridge = window.nekoSocial;
+            if (!bridge || typeof bridge.refreshCommunityHandoff !== 'function') {
+                return null;
+            }
+            try {
+                const result = await bridge.refreshCommunityHandoff();
+                return { handled: !!(result && result.handled) };
+            } catch (error) {
+                console.warn('[social] desktop community handoff failed (non-fatal):', error);
+                return { handled: false };
+            }
+        }
+
         function isSocialOpenRequestCurrent(generation) {
             return generation === null
                 || generation === undefined
@@ -703,11 +720,37 @@
             if (window.nekoSocialUnlock && window.nekoSocialUnlock.isLocked()) {
                 return;
             }
-            if (typeof focusOpenSocialWindow === 'function' && focusOpenSocialWindow()) {
-                return;
-            }
-            if (shouldIgnoreSocialOpenRequest()) {
-                return;
+            const isElectronHost = !!(window.electronShell && typeof window.electronShell.openExternal === 'function');
+            const requestDesktopHandoff = () => (typeof requestDesktopCommunityHandoff === 'function'
+                ? requestDesktopCommunityHandoff()
+                : Promise.resolve(null));
+            if (isElectronHost) {
+                // 社区窗口已开时不能只聚焦：铸造页等页面需要一张新的 native_delegate，
+                // 由主进程写进窗口当前页的哈希（#3450）。渲染进程刷新后 windowRef 丢失
+                // 也能靠主进程找回已开窗口。桥缺失（旧版 NEKO-PC）时退回仅聚焦。
+                if (shouldIgnoreSocialOpenRequest()) {
+                    return;
+                }
+                const handoffGeneration = typeof getSocialOpenState === 'function'
+                    ? (Number(getSocialOpenState().generation) || 0)
+                    : null;
+                const desktopHandoff = await requestDesktopHandoff();
+                if (desktopHandoff && desktopHandoff.handled) {
+                    if (typeof releaseSocialOpenRequest === 'function') releaseSocialOpenRequest(handoffGeneration);
+                    return;
+                }
+                if (!desktopHandoff && typeof focusOpenSocialWindow === 'function' && focusOpenSocialWindow()) {
+                    if (typeof releaseSocialOpenRequest === 'function') releaseSocialOpenRequest(handoffGeneration);
+                    return;
+                }
+                // 没有社区窗口：沿用本次已占用的 social-open 锁继续首开流程。
+            } else {
+                if (typeof focusOpenSocialWindow === 'function' && focusOpenSocialWindow()) {
+                    return;
+                }
+                if (shouldIgnoreSocialOpenRequest()) {
+                    return;
+                }
             }
             const socialOpenGeneration = typeof getSocialOpenState === 'function'
                 ? (Number(getSocialOpenState().generation) || 0)
@@ -984,6 +1027,10 @@
                 return targetUrl;
             };
             const completeInitialCommunityHandoff = async (targetUrl, initialNativeDelegate = '', pendingProofs = {}) => {
+                // Electron 首个 window.open 已带上 delegate 时无需补签。
+                if (isElectron && pendingProofs.initialUrlHasDelegate) {
+                    return;
+                }
                 // 已登录快速路径直接复用并行取得的 delegate。仅在状态接口失败、
                 // 但 auth-status 兜底确认已登录时重试一次，避免重复解析 OAuth 会话。
                 let nativeDelegate = initialNativeDelegate;
@@ -1005,8 +1052,13 @@
                         : await attachNativeSyncTicket(new URL(targetUrl, window.location.href));
                     attachNativeDelegate(delegateTargetUrl, nativeDelegate);
                     if (isElectron) {
-                        if (!openElectronSocialWindow(delegateTargetUrl.toString())) {
+                        // 对已开的 neko-social 再 window.open 落不到内置窗口上（#3450）：
+                        // 交给主进程写进社区窗口当前页的哈希。旧版 NEKO-PC 没有桥时保留原行为。
+                        const desktopHandoff = await requestDesktopHandoff();
+                        if (!desktopHandoff && !openElectronSocialWindow(delegateTargetUrl.toString())) {
                             console.warn('[social] failed to refresh Electron community window with native delegate');
+                        } else if (desktopHandoff && !desktopHandoff.handled) {
+                            console.warn('[social] desktop community handoff found no community window');
                         }
                     } else if (popupRef) {
                         navigateBrowserPopup(delegateTargetUrl.toString());
@@ -1092,6 +1144,10 @@
                     initialNativeHandoffPromise,
                     { nativeDelegate: '', loginState: 'unknown' }
                 );
+                // Electron：delegate 若在票据之前已就绪，就直接放进首个 window.open（#3450），
+                // 免去一次补跳；没就绪也不额外等待，迟到的由主进程写进已开窗口。
+                let settledInitialHandoff = null;
+                initialNativeHandoffPromise.then(handoff => { settledInitialHandoff = handoff; }, () => {});
                 const [initialSyncTicket, clientId] = await Promise.all([
                     waitForInitialNativeProof(initialSyncTicketPromise),
                     initialClientIdPromise
@@ -1099,6 +1155,11 @@
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
                 // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
                 applyNativeSyncTicket(targetUrl, initialSyncTicket);
+                const initialUrlHasDelegate = !!(isElectron && settledInitialHandoff
+                    && settledInitialHandoff.nativeDelegate);
+                if (initialUrlHasDelegate) {
+                    attachNativeDelegate(targetUrl, settledInitialHandoff.nativeDelegate);
+                }
                 // 顺手把 client_id 拼进 URL（仅关联游客身份，不构成登录态同步授权）。
                 if (clientId) {
                     targetUrl.searchParams.set('cid', clientId);
@@ -1250,7 +1311,8 @@
                                 {
                                     nativeHandoff: initialNativeHandoffPromise,
                                     syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
-                                    loggedOut: communityLoggedOut
+                                    loggedOut: communityLoggedOut,
+                                    initialUrlHasDelegate
                                 }
                             );
                         }
@@ -1274,7 +1336,8 @@
                         {
                             nativeHandoff: initialNativeHandoffPromise,
                             syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
-                            loggedOut: communityLoggedOut
+                            loggedOut: communityLoggedOut,
+                            initialUrlHasDelegate
                         }
                     );
                 }

@@ -302,6 +302,89 @@ const fetch = async url => {
 
 
 @pytest.mark.unit
+def test_electron_social_click_hands_delegate_to_open_community_window():
+    """#3450: an already-open Electron community window gets a fresh delegate via
+    the main process, and the first open carries a ready delegate in its URL."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    source = read_js_parts(APP_UI_PATH)
+    listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
+    listener = source[listener_start:source.index("// 睡觉按钮（请她离开）", listener_start)]
+    helpers = "\n".join(
+        _extract_js_function(source, signature)
+        for signature in (
+            "function getSocialOpenState()",
+            "async function requestDesktopCommunityHandoff()",
+        )
+    )
+    script = r"""
+const assert = require('node:assert/strict');
+let onClick;
+const openedUrls = [];
+let bridgeCalls = 0;
+let bridgeResult = { handled: false };
+const window = {
+    location: new URL('http://localhost:48911/'),
+    electronShell: { openExternal: () => {} },
+    nekoSocial: {
+        refreshCommunityHandoff: async () => { bridgeCalls += 1; return bridgeResult; },
+    },
+    addEventListener: (_type, callback) => { onClick = callback; },
+    open: (url) => {
+        openedUrls.push(url);
+        return { closed: false, focus() {}, location: { href: url, replace() {} } };
+    },
+};
+const document = { documentElement: { getAttribute: () => 'light' } };
+const shouldIgnoreSocialOpenRequest = () => {
+    const state = getSocialOpenState();
+    if (state.inFlight) return true;
+    state.inFlight = true;
+    return false;
+};
+const releaseSocialOpenRequest = () => { getSocialOpenState().inFlight = false; };
+const isResolvedDarkTheme = () => false;
+const registerSocialThemeTarget = () => null;
+const queueSocialThemeSync = () => {};
+const DELEGATE = 'd'.repeat(43);
+const response = body => ({ ok: true, status: 200, json: async () => body });
+const fetch = async url => {
+    if (url === '/api/system/social/config') return response({ social_base_url: 'https://community.example' });
+    if (url === '/api/system/client-id') return response({ client_id: '' });
+    if (url === '/api/card-drop/sync-ticket') {
+        // The ticket settles after the delegate so the first URL can carry it.
+        await new Promise(resolve => setTimeout(resolve, 20));
+        return response({ sync_ticket: '' });
+    }
+    if (url === '/api/card-drop/native-delegate') return response({ native_delegate: DELEGATE });
+    if (url === '/api/card-drop/auth-status') return response({ logged_in: true });
+    throw new Error('unexpected request: ' + url);
+};
+""" + helpers + "\n" + listener + r"""
+(async () => {
+    // No community window yet: the bridge reports handled=false, so the first
+    // window.open runs and already carries the delegate (no follow-up open).
+    await onClick();
+    assert.equal(bridgeCalls, 1);
+    assert.equal(openedUrls.length, 1, 'first open must not be followed by a second window.open');
+    const first = new URL(openedUrls[0]);
+    assert.equal(first.pathname, '/feed');
+    assert.equal(new URLSearchParams(first.hash.slice(1)).get('native_delegate'), DELEGATE);
+
+    // Window already open: the main process refreshes it, the renderer opens nothing.
+    bridgeResult = { handled: true };
+    await onClick();
+    assert.equal(bridgeCalls, 2);
+    assert.equal(openedUrls.length, 1, 'an open community window is refreshed through the bridge');
+    assert.equal(getSocialOpenState().inFlight, false, 'the open lock is released after the handoff');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
 def test_social_oauth_callback_window_is_reused_for_community_navigation():
     node = shutil.which("node")
     if not node:
