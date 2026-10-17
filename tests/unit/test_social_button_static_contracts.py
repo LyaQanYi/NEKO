@@ -385,6 +385,132 @@ const fetch = async url => {
 
 
 @pytest.mark.unit
+def test_electron_first_open_still_delivers_a_late_sync_ticket():
+    """#3451 review: the first URL carries a ready delegate, but a sync ticket that
+    misses the 4s budget must still reach the community window afterwards. A hung
+    bridge must not keep the social-open lock forever."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    source = read_js_parts(APP_UI_PATH)
+    listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
+    listener = source[listener_start:source.index("// 睡觉按钮（请她离开）", listener_start)]
+    helpers = "\n".join(
+        _extract_js_function(source, signature)
+        for signature in (
+            "function getSocialOpenState()",
+            "async function requestDesktopCommunityHandoff()",
+        )
+    )
+    script = r"""
+const assert = require('node:assert/strict');
+// Shrink the 4s first-URL budget and the 8s bridge cap so the test stays fast.
+const realSetTimeout = setTimeout;
+globalThis.setTimeout = (fn, ms, ...args) => realSetTimeout(fn, (ms === 4000 || ms === 8000) ? 30 : ms, ...args);
+let onClick;
+const openedUrls = [];
+const bridgeCalls = [];
+let bridgeResults = [];
+const bridge = {
+    refreshCommunityHandoff: () => {
+        bridgeCalls.push(Date.now());
+        const next = bridgeResults.shift();
+        return next === 'hang' ? new Promise(() => {}) : Promise.resolve(next);
+    },
+};
+const window = {
+    location: new URL('http://localhost:48911/'),
+    electronShell: { openExternal: () => {} },
+    nekoSocial: bridge,
+    addEventListener: (_type, callback) => { onClick = callback; },
+    open: (url) => {
+        openedUrls.push(url);
+        return { closed: false, focus() {}, location: { href: url, replace() {} } };
+    },
+};
+const DESKTOP_COMMUNITY_HANDOFF_TIMEOUT_MS = 8000;
+const document = { documentElement: { getAttribute: () => 'light' } };
+const shouldIgnoreSocialOpenRequest = () => {
+    const state = getSocialOpenState();
+    if (state.inFlight) return true;
+    state.inFlight = true;
+    return false;
+};
+const releaseSocialOpenRequest = () => { getSocialOpenState().inFlight = false; };
+const isResolvedDarkTheme = () => false;
+const registerSocialThemeTarget = () => null;
+const queueSocialThemeSync = () => {};
+const DELEGATE = 'd'.repeat(43);
+const TICKET = 't'.repeat(43);
+const response = body => ({ ok: true, status: 200, json: async () => body });
+const fetch = async url => {
+    if (url === '/api/system/social/config') return response({ social_base_url: 'https://community.example' });
+    if (url === '/api/system/client-id') return response({ client_id: '' });
+    if (url === '/api/card-drop/sync-ticket') {
+        // Misses the (shrunk) first-URL budget, then succeeds.
+        await new Promise(resolve => realSetTimeout(resolve, 120));
+        return response({ sync_ticket: TICKET });
+    }
+    if (url === '/api/card-drop/native-delegate') return response({ native_delegate: DELEGATE });
+    if (url === '/api/card-drop/auth-status') return response({ logged_in: true });
+    throw new Error('unexpected request: ' + url);
+};
+const hashOf = raw => new URLSearchParams(new URL(raw).hash.slice(1));
+""" + helpers + "\n" + listener + r"""
+(async () => {
+    // New NEKO-PC: first URL has the delegate only; the late ticket goes through the bridge.
+    bridgeResults = [{ handled: false }, { handled: true }];
+    await onClick();
+    assert.equal(openedUrls.length, 1, 'the late ticket must not trigger a second window.open');
+    assert.equal(hashOf(openedUrls[0]).get('native_delegate'), DELEGATE);
+    assert.equal(hashOf(openedUrls[0]).get('native_sync'), null);
+    assert.equal(bridgeCalls.length, 2, 'the late ticket is handed off once the window exists');
+    assert.equal(getSocialOpenState().inFlight, false);
+
+    // Old NEKO-PC (no bridge): the late ticket rides a second window.open with the same delegate.
+    window.nekoSocial = null;
+    openedUrls.length = 0;
+    await onClick();
+    assert.equal(openedUrls.length, 2);
+    assert.equal(hashOf(openedUrls[1]).get('native_sync'), TICKET);
+    assert.equal(hashOf(openedUrls[1]).get('native_delegate'), DELEGATE);
+    getSocialOpenState().inFlight = false;
+
+    // A bridge that never answers is capped and the lock is released.
+    window.nekoSocial = bridge;
+    openedUrls.length = 0;
+    bridgeResults = ['hang'];
+    await onClick();
+    assert.equal(openedUrls.length, 0, 'a pending bridge means the window exists; do not open another');
+    assert.equal(getSocialOpenState().inFlight, false, 'the open lock is released after the cap');
+
+    // Old NEKO-PC with a stale closed windowRef: clearing it drops the lock, and the
+    // first-open flow must take it back so a concurrent click is deduped.
+    window.nekoSocial = null;
+    openedUrls.length = 0;
+    const state = getSocialOpenState();
+    state.windowRef = { closed: true };
+    const focusOpenSocialWindow = () => {
+        if (state.windowRef && state.windowRef.closed) {
+            state.windowRef = null;
+            state.inFlight = false;
+        }
+        return false;
+    };
+    globalThis.focusOpenSocialWindow = focusOpenSocialWindow;
+    const firstClick = onClick();
+    await new Promise(resolve => realSetTimeout(resolve, 0));
+    assert.equal(state.inFlight, true, 'the first-open flow holds the lock after clearing a closed window');
+    await onClick();
+    await firstClick;
+    assert.equal(openedUrls.length, 2, 'the concurrent click is deduped: one open plus the late-ticket reopen');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
 def test_social_oauth_callback_window_is_reused_for_community_navigation():
     node = shutil.which("node")
     if not node:

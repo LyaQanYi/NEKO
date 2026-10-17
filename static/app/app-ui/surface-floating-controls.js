@@ -522,17 +522,35 @@
         // NEKO-PC 主进程把新签的 native_delegate 写进已开社区窗口当前页的哈希并聚焦它。
         // 返回 null 表示宿主没有这个桥（浏览器或旧版 NEKO-PC），调用方走原有流程；
         // 否则返回 { handled }，handled=false 表示主进程那边没有社区窗口。
+        // 主进程只有找到社区窗口时才会去签凭证（先聚焦再签），所以迟迟不返回说明窗口在、
+        // 只是签发慢：超时按已处理算，凭证签好后主进程照样写进窗口。没有上限的话，
+        // 宿主卡住会让 social-open 锁永远不释放，按钮从此点不动。
+        const DESKTOP_COMMUNITY_HANDOFF_TIMEOUT_MS = 8000;
         async function requestDesktopCommunityHandoff() {
             const bridge = window.nekoSocial;
             if (!bridge || typeof bridge.refreshCommunityHandoff !== 'function') {
                 return null;
             }
+            let timeoutId;
             try {
-                const result = await bridge.refreshCommunityHandoff();
+                const result = await Promise.race([
+                    bridge.refreshCommunityHandoff(),
+                    new Promise(resolve => {
+                        timeoutId = setTimeout(
+                            () => resolve({ handled: true, timedOut: true }),
+                            DESKTOP_COMMUNITY_HANDOFF_TIMEOUT_MS
+                        );
+                    })
+                ]);
+                if (result && result.timedOut) {
+                    console.warn('[social] desktop community handoff is still pending; not waiting for it');
+                }
                 return { handled: !!(result && result.handled) };
             } catch (error) {
                 console.warn('[social] desktop community handoff failed (non-fatal):', error);
                 return { handled: false };
+            } finally {
+                clearTimeout(timeoutId);
             }
         }
 
@@ -744,6 +762,12 @@
                     return;
                 }
                 // 没有社区窗口：沿用本次已占用的 social-open 锁继续首开流程。
+                // focusOpenSocialWindow 发现 windowRef 已关闭时会顺手清掉锁；这里重新占锁，
+                // 否则下一次点击会并行跑第二条首开流程。
+                if (typeof getSocialOpenState === 'function' && !getSocialOpenState().inFlight
+                    && shouldIgnoreSocialOpenRequest()) {
+                    return;
+                }
             } else {
                 if (typeof focusOpenSocialWindow === 'function' && focusOpenSocialWindow()) {
                     return;
@@ -1027,8 +1051,21 @@
                 return targetUrl;
             };
             const completeInitialCommunityHandoff = async (targetUrl, initialNativeDelegate = '', pendingProofs = {}) => {
-                // Electron 首个 window.open 已带上 delegate 时无需补签。
+                // Electron 首个 window.open 已带上 delegate：只差晚到的同步票据时才补送。
+                // delegate 只是授信证明，社区页登录靠 native_sync，票据不能丢（#3451 review）。
                 if (isElectron && pendingProofs.initialUrlHasDelegate) {
+                    const lateTicket = pendingProofs.syncTicket ? await pendingProofs.syncTicket : '';
+                    if (!lateTicket) return;
+                    const ticketTargetUrl = applyNativeSyncTicket(new URL(targetUrl, window.location.href), lateTicket);
+                    attachNativeDelegate(ticketTargetUrl, initialNativeDelegate);
+                    // 主进程会签一对新的票据和 delegate 写进窗口当前页；旧版 NEKO-PC 没有桥时
+                    // 退回原行为，把这张晚到的票据随同一 delegate 再 window.open 一次。
+                    const desktopHandoff = await requestDesktopHandoff();
+                    if (!desktopHandoff && !openElectronSocialWindow(ticketTargetUrl.toString())) {
+                        console.warn('[social] failed to deliver late sync ticket to Electron community window');
+                    } else if (desktopHandoff && !desktopHandoff.handled) {
+                        console.warn('[social] desktop community handoff found no community window');
+                    }
                     return;
                 }
                 // 已登录快速路径直接复用并行取得的 delegate。仅在状态接口失败、
