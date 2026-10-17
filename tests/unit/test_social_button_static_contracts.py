@@ -386,6 +386,137 @@ const fetch = async url => {
 
 
 @pytest.mark.unit
+def test_recovered_social_window_is_re_registered_for_theme_updates():
+    """#3451 review: after a renderer reload the theme bridge targets are empty.
+    Recovering the open community window (browser probe or Electron handoff) must
+    re-register it with the remembered community origin and push the current theme."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    source = read_js_parts(APP_UI_PATH)
+    listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
+    listener = source[listener_start:source.index("// 睡觉按钮（请她离开）", listener_start)]
+    origin_key = re.search(r"const SOCIAL_COMMUNITY_ORIGIN_KEY = '[^']+';", source).group(0)
+    helpers = "\n".join(
+        _extract_js_function(source, signature)
+        for signature in (
+            "function getSocialOpenState()",
+            "function getOpenSocialWindow()",
+            "function rememberSocialWindow(socialWindow, generation = null)",
+            "function forgetSocialWindow(socialWindow, generation = null)",
+            "function isSocialOAuthCallbackWindow(socialWindow)",
+            "function focusOpenSocialWindow()",
+            "function probeNamedSocialWindow()",
+            "async function requestDesktopCommunityHandoff()",
+            "function getSocialThemeBridgeState()",
+            "function registerSocialThemeTarget(targetWindow, targetUrl)",
+            "function rememberSocialCommunityOrigin(targetUrl)",
+            "function recallSocialCommunityOrigin()",
+            "function resyncRecoveredSocialTheme(socialWindow)",
+            "function postSocialTheme(target, darkMode)",
+            "function publishSocialTheme(darkMode)",
+            "function queueSocialThemeSync(target)",
+        )
+    )
+    script = r"""
+const assert = require('node:assert/strict');
+const SOCIAL_WINDOW_NAME = 'neko-social';
+const SOCIAL_OAUTH_CALLBACK_PATHS = new Set(['/oauth/callback']);
+const DESKTOP_COMMUNITY_HANDOFF_TIMEOUT_MS = 8000;
+const store = new Map();
+const sessionStorage = {
+    getItem: key => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => { store.set(key, String(value)); },
+};
+let onClick;
+let popup = null;
+let dark = false;
+const makePopup = () => {
+    const posted = [];
+    return {
+        posted,
+        closed: false,
+        location: { href: 'about:blank', replace(url) { this.href = url; } },
+        focus() {},
+        postMessage(message, origin) { posted.push({ message, origin }); },
+    };
+};
+const window = {
+    location: new URL('http://localhost:48911/'),
+    addEventListener: (type, callback) => { if (type === 'live2d-social-click') onClick = callback; },
+    open: (_url, name) => {
+        if (name === SOCIAL_WINDOW_NAME && popup && !popup.closed) return popup;
+        popup = makePopup();
+        return popup;
+    },
+};
+const document = { documentElement: { getAttribute: () => (dark ? 'dark' : 'light') } };
+const isResolvedDarkTheme = () => dark;
+const shouldIgnoreSocialOpenRequest = () => {
+    const state = getSocialOpenState();
+    if (state.inFlight) return true;
+    state.inFlight = true;
+    return false;
+};
+const releaseSocialOpenRequest = () => { getSocialOpenState().inFlight = false; };
+const response = body => ({ ok: true, status: 200, json: async () => body });
+const fetch = async url => {
+    if (url === '/api/system/social/config') return response({ social_base_url: 'https://community.example' });
+    if (url === '/api/system/client-id') return response({ client_id: '' });
+    if (url === '/api/card-drop/sync-ticket') return response({ sync_ticket: '' });
+    if (url === '/api/card-drop/native-delegate') return response({ native_delegate: '' });
+    if (url === '/api/card-drop/auth-status') return response({ logged_in: true });
+    throw new Error('unexpected request: ' + url);
+};
+const settle = () => new Promise(resolve => setTimeout(resolve, 1100));
+""" + origin_key + "\n" + helpers + "\n" + listener + r"""
+(async () => {
+    // Browser: first open registers the target and remembers the community origin.
+    await onClick();
+    await settle();  // drain the first open's own theme sync timers
+    const firstPopup = popup;
+    assert.equal(sessionStorage.getItem(SOCIAL_COMMUNITY_ORIGIN_KEY), 'https://community.example');
+
+    // Renderer reload: in-memory state is gone, the cross-origin popup survives.
+    window.__nekoSocialOpenState = null;
+    window.__nekoSocialThemeBridgeState = null;
+    Object.defineProperty(firstPopup.location, 'href', {
+        configurable: true,
+        get() { throw new Error('cross-origin'); },
+    });
+    dark = true;
+    firstPopup.posted.length = 0;
+    await onClick();
+    await settle();
+    assert.equal(popup, firstPopup, 'the named popup is recovered, not recreated');
+    assert.ok(firstPopup.posted.some(({ message, origin }) => (
+        message.type === 'theme-change' && message.theme === 'dark'
+        && origin === 'https://community.example'
+    )), 'the recovered popup receives the current theme');
+    firstPopup.posted.length = 0;
+    publishSocialTheme(false);
+    assert.equal(firstPopup.posted.length, 1, 'later theme changes reach the recovered popup');
+
+    // Electron: the main process handles the handoff; a live window reference
+    // must still be re-registered after the bridge state was reset.
+    window.electronShell = { openExternal: () => {} };
+    window.nekoSocial = { refreshCommunityHandoff: async () => ({ handled: true }) };
+    window.__nekoSocialThemeBridgeState = null;
+    rememberSocialWindow(firstPopup);
+    firstPopup.posted.length = 0;
+    dark = false;
+    await onClick();
+    await settle();
+    assert.ok(firstPopup.posted.some(({ message }) => message.theme === 'light'),
+        'the Electron handoff path re-syncs the theme of the open window');
+    assert.equal(getSocialThemeBridgeState().targets.length, 1);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
 def test_electron_first_open_still_delivers_a_late_sync_ticket():
     """#3451 review: the first URL carries a ready delegate, but a sync ticket that
     misses the 4s budget must still reach the community window afterwards. A hung

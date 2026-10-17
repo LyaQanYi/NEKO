@@ -675,6 +675,42 @@
             }
         }
 
+        // 社区页跨源，找回的窗口读不到 location；首开时记下社区源，渲染进程刷新后
+        // 找回窗口时据此重新登记主题目标。
+        const SOCIAL_COMMUNITY_ORIGIN_KEY = 'neko_social_community_origin';
+
+        function rememberSocialCommunityOrigin(targetUrl) {
+            try {
+                const parsed = new URL(String(targetUrl), window.location.href);
+                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+                getSocialThemeBridgeState().communityOrigin = parsed.origin;
+                try { sessionStorage.setItem(SOCIAL_COMMUNITY_ORIGIN_KEY, parsed.origin); } catch (_) { /* ignore */ }
+            } catch (_) { /* ignore */ }
+        }
+
+        function recallSocialCommunityOrigin() {
+            const state = getSocialThemeBridgeState();
+            if (state.communityOrigin) return state.communityOrigin;
+            try {
+                const stored = sessionStorage.getItem(SOCIAL_COMMUNITY_ORIGIN_KEY);
+                if (stored) {
+                    state.communityOrigin = stored;
+                    return stored;
+                }
+            } catch (_) { /* ignore */ }
+            return '';
+        }
+
+        // 找回已开的社区窗口后（浏览器 probe、Electron 主进程交接）重新登记主题目标并补发
+        // 当前主题，否则渲染进程刷新后 targets 为空，之后的主题切换到不了社区窗口。
+        function resyncRecoveredSocialTheme(socialWindow) {
+            const origin = recallSocialCommunityOrigin();
+            if (!socialWindow || !origin) return null;
+            const target = registerSocialThemeTarget(socialWindow, origin);
+            queueSocialThemeSync(target);
+            return target;
+        }
+
         function postSocialTheme(target, darkMode) {
             target.targetWindow.postMessage({
                 source: 'neko-desktop',
@@ -754,6 +790,10 @@
                     : null;
                 const desktopHandoff = await requestDesktopHandoff();
                 if (desktopHandoff && desktopHandoff.handled) {
+                    // 渲染进程没刷新过时手里还有窗口引用：补登主题目标并同步当前主题。
+                    if (typeof resyncRecoveredSocialTheme === 'function' && typeof getOpenSocialWindow === 'function') {
+                        resyncRecoveredSocialTheme(getOpenSocialWindow());
+                    }
                     if (typeof releaseSocialOpenRequest === 'function') releaseSocialOpenRequest(handoffGeneration);
                     return;
                 }
@@ -790,6 +830,9 @@
                 const probe = probeNamedSocialWindow();
                 if (probe && probe.existing) {
                     rememberSocialWindow(probe.socialWindow, socialOpenGeneration);
+                    if (typeof resyncRecoveredSocialTheme === 'function') {
+                        resyncRecoveredSocialTheme(probe.socialWindow);
+                    }
                     try { probe.socialWindow.focus && probe.socialWindow.focus(); } catch (_) { /* ignore */ }
                     const releaseExistingSocialWindowRequest = releaseSocialOpenRequestForFlow;
                     releaseExistingSocialWindowRequest();
@@ -846,6 +889,7 @@
                         attachResolvedTheme(parsedTarget);
                         navigationTarget = parsedTarget.toString();
                         themeTarget = registerSocialThemeTarget(currentPopup, parsedTarget);
+                        if (themeTarget) rememberSocialCommunityOrigin(parsedTarget);
                     }
                 } catch (_) { /* non-community navigation */ }
                 // The external page receives theme-only messages but never a reference
@@ -936,7 +980,9 @@
                 if (typeof rememberSocialWindow === 'function') {
                     rememberSocialWindow(socialWin, socialOpenGeneration);
                 }
-                registerSocialThemeTarget(socialWin, resolvedTargetUrl);
+                if (registerSocialThemeTarget(socialWin, resolvedTargetUrl)) {
+                    rememberSocialCommunityOrigin(resolvedTargetUrl);
+                }
                 try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
                 return true;
             };
