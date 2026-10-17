@@ -199,6 +199,62 @@ def test_social_open_request_is_deduped_before_fetching_config():
 
 
 @pytest.mark.unit
+def test_social_theme_bridge_reaches_only_held_windows_and_leaves_reload_gap_to_desktop_main():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    source = read_js_parts(APP_UI_PATH)
+    bridge_start = source.index("function isResolvedDarkTheme()")
+    bridge = source[bridge_start:source.index("// 喵宇宙（社交平台）按钮", bridge_start)]
+    script = r"""
+const assert = require('node:assert/strict');
+const listeners = new Map();
+const timers = [];
+const window = {
+    location: new URL('http://127.0.0.1:48911/'),
+    addEventListener(type, listener) {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(listener);
+    },
+    dispatch(type, event) {
+        for (const listener of listeners.get(type) || []) listener(event);
+    },
+};
+const document = { documentElement: { getAttribute: () => 'light' } };
+const setTimeout = (callback) => { timers.push(callback); };
+const makeCommunityWindow = () => ({ messages: [], postMessage(data, origin) { this.messages.push({ data, origin }); } });
+""" + bridge + r"""
+const community = makeCommunityWindow();
+const target = registerSocialThemeTarget(community, 'https://community.example/feed?neko_theme=light');
+assert.deepEqual(target, { targetWindow: community, targetOrigin: 'https://community.example' });
+assert.equal(registerSocialThemeTarget(makeCommunityWindow(), 'file:///tmp/feed'), null);
+
+window.dispatch('neko-theme-changed', { detail: { darkMode: true } });
+assert.deepEqual(community.messages, [{
+    data: { source: 'neko-desktop', type: 'theme-change', theme: 'dark' },
+    origin: 'https://community.example',
+}]);
+
+// theme-ready is answered only for the held window at its registered origin.
+window.dispatch('message', { source: community, origin: 'https://evil.example', data: { source: 'neko-community', type: 'theme-ready' } });
+window.dispatch('message', { source: makeCommunityWindow(), origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
+assert.equal(community.messages.length, 1);
+window.dispatch('message', { source: community, origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
+assert.equal(community.messages.length, 2);
+
+// A rebuilt Pet renderer starts with an empty bridge: it no longer holds the
+// surviving community window, so later theme changes post nothing. NEKO-PC
+// main covers this gap by forwarding each dark-mode broadcast itself.
+window.__nekoSocialThemeBridgeState = null;
+window.dispatch('neko-theme-changed', { detail: { darkMode: false } });
+assert.equal(community.messages.length, 2);
+assert.equal(timers.length, 0);
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
 def test_social_existing_window_is_reused_and_closed_window_reopens():
     node = shutil.which("node")
     if not node:
