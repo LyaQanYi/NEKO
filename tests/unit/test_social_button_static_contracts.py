@@ -582,10 +582,16 @@ const DELEGATE = 'd'.repeat(43);
 const TICKET = 't'.repeat(43);
 let ticketQueue = [];
 let ticketRequests = 0;
+// Delays (ms) for the delegate and client-id requests; 0 keeps both ahead of the ticket.
+let delegateDelay = 0;
+let clientIdDelay = 0;
 const response = body => ({ ok: true, status: 200, json: async () => body });
 const fetch = async url => {
     if (url === '/api/system/social/config') return response({ social_base_url: 'https://community.example' });
-    if (url === '/api/system/client-id') return response({ client_id: '' });
+    if (url === '/api/system/client-id') {
+        if (clientIdDelay) await new Promise(resolve => realSetTimeout(resolve, clientIdDelay));
+        return response({ client_id: '' });
+    }
     if (url === '/api/card-drop/sync-ticket') {
         ticketRequests += 1;
         // By default misses the (shrunk) first-URL budget, then succeeds.
@@ -593,7 +599,10 @@ const fetch = async url => {
         await new Promise(resolve => realSetTimeout(resolve, next.delay));
         return response({ sync_ticket: next.ticket });
     }
-    if (url === '/api/card-drop/native-delegate') return response({ native_delegate: DELEGATE });
+    if (url === '/api/card-drop/native-delegate') {
+        if (delegateDelay) await new Promise(resolve => realSetTimeout(resolve, delegateDelay));
+        return response({ native_delegate: DELEGATE });
+    }
     if (url === '/api/card-drop/auth-status') return response({ logged_in: true });
     throw new Error('unexpected request: ' + url);
 };
@@ -631,6 +640,26 @@ const hashOf = raw => new URLSearchParams(new URL(raw).hash.slice(1));
     assert.equal(openedUrls.length, 2, 'an undelivered bridge handoff falls back to window.open');
     assert.equal(hashOf(openedUrls[1]).get('native_sync'), TICKET);
     assert.equal(hashOf(openedUrls[1]).get('native_delegate'), DELEGATE);
+    assert.equal(getSocialOpenState().inFlight, false);
+
+    // #3451 review: the delegate misses its 4s readiness budget but settles while the
+    // slow client-id request still holds the first open, so it rides the first URL. The
+    // undelivered late-ticket fallback must reuse that settled delegate, not the timed-out
+    // empty placeholder.
+    bridgeCalls.length = 0;
+    bridgeResults = [{ handled: false }, { handled: false }];
+    delegateDelay = 60;
+    clientIdDelay = 90;
+    getSocialOpenState().windowRef = null;
+    openedUrls.length = 0;
+    await onClick();
+    delegateDelay = 0;
+    clientIdDelay = 0;
+    assert.equal(hashOf(openedUrls[0]).get('native_delegate'), DELEGATE, 'the settled delegate rides the first URL');
+    assert.equal(hashOf(openedUrls[0]).get('native_sync'), null);
+    assert.equal(openedUrls.length, 2);
+    assert.equal(hashOf(openedUrls[1]).get('native_sync'), TICKET);
+    assert.equal(hashOf(openedUrls[1]).get('native_delegate'), DELEGATE, 'the fallback keeps the settled delegate');
     assert.equal(getSocialOpenState().inFlight, false);
 
     // Old NEKO-PC (no bridge): the late ticket rides a second window.open with the same delegate.

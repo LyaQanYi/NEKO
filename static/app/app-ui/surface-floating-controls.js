@@ -1099,7 +1099,9 @@
             const completeInitialCommunityHandoff = async (targetUrl, initialNativeDelegate = '', pendingProofs = {}) => {
                 // Electron 首个 window.open 已带上 delegate：只差晚到的同步票据时才补送。
                 // delegate 只是授信证明，社区页登录靠 native_sync，票据不能丢（#3451 review）。
-                if (isElectron && pendingProofs.initialUrlHasDelegate) {
+                // initialUrlDelegate 是首个 URL 实际带上的 delegate 本身：它可能在 4 秒就绪期之后
+                // 才落定，此时 initialNativeDelegate 仍是超时占位的空串，回退时必须用它。
+                if (isElectron && pendingProofs.initialUrlDelegate) {
                     // 票据和 delegate 都已在首个 URL 里，无需补送。
                     if (!pendingProofs.syncTicket) return;
                     let lateTicket = await pendingProofs.syncTicket;
@@ -1114,7 +1116,7 @@
                     if (!lateTicket) lateTicket = await fetchNativeSyncTicket();
                     if (!lateTicket) return;
                     const ticketTargetUrl = applyNativeSyncTicket(new URL(targetUrl, window.location.href), lateTicket);
-                    attachNativeDelegate(ticketTargetUrl, initialNativeDelegate);
+                    attachNativeDelegate(ticketTargetUrl, pendingProofs.initialUrlDelegate);
                     if (!openElectronSocialWindow(ticketTargetUrl.toString())) {
                         console.warn('[social] failed to deliver late sync ticket to Electron community window');
                     }
@@ -1248,10 +1250,10 @@
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
                 // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
                 applyNativeSyncTicket(targetUrl, initialSyncTicket);
-                const initialUrlHasDelegate = !!(isElectron && settledInitialHandoff
-                    && settledInitialHandoff.nativeDelegate);
-                if (initialUrlHasDelegate) {
-                    attachNativeDelegate(targetUrl, settledInitialHandoff.nativeDelegate);
+                const initialUrlDelegate = (isElectron && settledInitialHandoff
+                    && settledInitialHandoff.nativeDelegate) || '';
+                if (initialUrlDelegate) {
+                    attachNativeDelegate(targetUrl, initialUrlDelegate);
                 }
                 // 顺手把 client_id 拼进 URL（仅关联游客身份，不构成登录态同步授权）。
                 if (clientId) {
@@ -1405,7 +1407,7 @@
                                     nativeHandoff: initialNativeHandoffPromise,
                                     syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
                                     loggedOut: communityLoggedOut,
-                                    initialUrlHasDelegate
+                                    initialUrlDelegate
                                 }
                             );
                         }
@@ -1430,7 +1432,7 @@
                             nativeHandoff: initialNativeHandoffPromise,
                             syncTicket: initialSyncTicket ? null : initialSyncTicketPromise,
                             loggedOut: communityLoggedOut,
-                            initialUrlHasDelegate
+                            initialUrlDelegate
                         }
                     );
                 }
