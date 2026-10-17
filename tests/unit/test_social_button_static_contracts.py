@@ -353,9 +353,9 @@ const fetch = async url => {
     if (url === '/api/system/social/config') return response({ social_base_url: 'https://community.example' });
     if (url === '/api/system/client-id') return response({ client_id: '' });
     if (url === '/api/card-drop/sync-ticket') {
-        // The ticket settles after the delegate so the first URL can carry it.
+        // The ticket settles after the delegate; both still fit the first URL.
         await new Promise(resolve => setTimeout(resolve, 20));
-        return response({ sync_ticket: '' });
+        return response({ sync_ticket: 't'.repeat(43) });
     }
     if (url === '/api/card-drop/native-delegate') return response({ native_delegate: DELEGATE });
     if (url === '/api/card-drop/auth-status') return response({ logged_in: true });
@@ -371,6 +371,7 @@ const fetch = async url => {
     const first = new URL(openedUrls[0]);
     assert.equal(first.pathname, '/feed');
     assert.equal(new URLSearchParams(first.hash.slice(1)).get('native_delegate'), DELEGATE);
+    assert.equal(new URLSearchParams(first.hash.slice(1)).get('native_sync'), 't'.repeat(43));
 
     // Window already open: the main process refreshes it, the renderer opens nothing.
     bridgeResult = { handled: true };
@@ -399,6 +400,11 @@ def test_electron_first_open_still_delivers_a_late_sync_ticket():
         _extract_js_function(source, signature)
         for signature in (
             "function getSocialOpenState()",
+            "function getOpenSocialWindow()",
+            "function rememberSocialWindow(socialWindow, generation = null)",
+            "function forgetSocialWindow(socialWindow, generation = null)",
+            "function isSocialOAuthCallbackWindow(socialWindow)",
+            "function focusOpenSocialWindow()",
             "async function requestDesktopCommunityHandoff()",
         )
     )
@@ -429,6 +435,7 @@ const window = {
     },
 };
 const DESKTOP_COMMUNITY_HANDOFF_TIMEOUT_MS = 8000;
+const SOCIAL_OAUTH_CALLBACK_PATHS = new Set(['/oauth/callback', '/api/card-drop/oauth/callback']);
 const document = { documentElement: { getAttribute: () => 'light' } };
 const shouldIgnoreSocialOpenRequest = () => {
     const state = getSocialOpenState();
@@ -442,14 +449,18 @@ const registerSocialThemeTarget = () => null;
 const queueSocialThemeSync = () => {};
 const DELEGATE = 'd'.repeat(43);
 const TICKET = 't'.repeat(43);
+let ticketQueue = [];
+let ticketRequests = 0;
 const response = body => ({ ok: true, status: 200, json: async () => body });
 const fetch = async url => {
     if (url === '/api/system/social/config') return response({ social_base_url: 'https://community.example' });
     if (url === '/api/system/client-id') return response({ client_id: '' });
     if (url === '/api/card-drop/sync-ticket') {
-        // Misses the (shrunk) first-URL budget, then succeeds.
-        await new Promise(resolve => realSetTimeout(resolve, 120));
-        return response({ sync_ticket: TICKET });
+        ticketRequests += 1;
+        // By default misses the (shrunk) first-URL budget, then succeeds.
+        const next = ticketQueue.shift() || { delay: 120, ticket: TICKET };
+        await new Promise(resolve => realSetTimeout(resolve, next.delay));
+        return response({ sync_ticket: next.ticket });
     }
     if (url === '/api/card-drop/native-delegate') return response({ native_delegate: DELEGATE });
     if (url === '/api/card-drop/auth-status') return response({ logged_in: true });
@@ -467,10 +478,40 @@ const hashOf = raw => new URLSearchParams(new URL(raw).hash.slice(1));
     assert.equal(bridgeCalls.length, 2, 'the late ticket is handed off once the window exists');
     assert.equal(getSocialOpenState().inFlight, false);
 
-    // Old NEKO-PC (no bridge): the late ticket rides a second window.open with the same delegate.
-    window.nekoSocial = null;
+    // New NEKO-PC, first issuance returns empty: the bridge still mints a fresh pair.
+    bridgeCalls.length = 0;
+    bridgeResults = [{ handled: false }, { handled: true }];
+    ticketQueue = [{ delay: 120, ticket: '' }];
+    getSocialOpenState().windowRef = null;
     openedUrls.length = 0;
     await onClick();
+    assert.equal(openedUrls.length, 1);
+    assert.equal(bridgeCalls.length, 2, 'an empty first ticket must not end the handoff');
+    assert.equal(getSocialOpenState().inFlight, false);
+
+    // Old NEKO-PC (no bridge): the late ticket rides a second window.open with the same delegate.
+    // Clear the window left by the previous scenario so the real focus branch does not short-circuit.
+    window.nekoSocial = null;
+    getSocialOpenState().windowRef = null;
+    openedUrls.length = 0;
+    await onClick();
+    assert.equal(openedUrls.length, 2);
+    assert.equal(hashOf(openedUrls[1]).get('native_sync'), TICKET);
+    assert.equal(hashOf(openedUrls[1]).get('native_delegate'), DELEGATE);
+    getSocialOpenState().inFlight = false;
+
+    // Old NEKO-PC, window already open: the real focus branch returns without a new open.
+    await onClick();
+    assert.equal(openedUrls.length, 2, 'an open window is only focused on old NEKO-PC');
+    assert.equal(getSocialOpenState().inFlight, false);
+
+    // Old NEKO-PC, first issuance returns empty: re-mint once, then reopen with the ticket.
+    getSocialOpenState().windowRef = null;
+    openedUrls.length = 0;
+    ticketRequests = 0;
+    ticketQueue = [{ delay: 120, ticket: '' }, { delay: 0, ticket: TICKET }];
+    await onClick();
+    assert.equal(ticketRequests, 2, 'an empty first ticket is re-minted once');
     assert.equal(openedUrls.length, 2);
     assert.equal(hashOf(openedUrls[1]).get('native_sync'), TICKET);
     assert.equal(hashOf(openedUrls[1]).get('native_delegate'), DELEGATE);
@@ -490,14 +531,6 @@ const hashOf = raw => new URLSearchParams(new URL(raw).hash.slice(1));
     openedUrls.length = 0;
     const state = getSocialOpenState();
     state.windowRef = { closed: true };
-    const focusOpenSocialWindow = () => {
-        if (state.windowRef && state.windowRef.closed) {
-            state.windowRef = null;
-            state.inFlight = false;
-        }
-        return false;
-    };
-    globalThis.focusOpenSocialWindow = focusOpenSocialWindow;
     const firstClick = onClick();
     await new Promise(resolve => realSetTimeout(resolve, 0));
     assert.equal(state.inFlight, true, 'the first-open flow holds the lock after clearing a closed window');

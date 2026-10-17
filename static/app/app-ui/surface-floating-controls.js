@@ -1054,17 +1054,25 @@
                 // Electron 首个 window.open 已带上 delegate：只差晚到的同步票据时才补送。
                 // delegate 只是授信证明，社区页登录靠 native_sync，票据不能丢（#3451 review）。
                 if (isElectron && pendingProofs.initialUrlHasDelegate) {
-                    const lateTicket = pendingProofs.syncTicket ? await pendingProofs.syncTicket : '';
+                    // 票据和 delegate 都已在首个 URL 里，无需补送。
+                    if (!pendingProofs.syncTicket) return;
+                    let lateTicket = await pendingProofs.syncTicket;
+                    // 主进程会签一对新的票据和 delegate 写进窗口当前页，首次签发为空也不影响。
+                    const desktopHandoff = await requestDesktopHandoff();
+                    if (desktopHandoff) {
+                        if (!desktopHandoff.handled) {
+                            console.warn('[social] desktop community handoff found no community window');
+                        }
+                        return;
+                    }
+                    // 旧版 NEKO-PC 没有桥：退回原行为。首次签发为空（瞬时错误）时照旧重签一次，
+                    // 再把票据随同一 delegate 再 window.open 一次。
+                    if (!lateTicket) lateTicket = await fetchNativeSyncTicket();
                     if (!lateTicket) return;
                     const ticketTargetUrl = applyNativeSyncTicket(new URL(targetUrl, window.location.href), lateTicket);
                     attachNativeDelegate(ticketTargetUrl, initialNativeDelegate);
-                    // 主进程会签一对新的票据和 delegate 写进窗口当前页；旧版 NEKO-PC 没有桥时
-                    // 退回原行为，把这张晚到的票据随同一 delegate 再 window.open 一次。
-                    const desktopHandoff = await requestDesktopHandoff();
-                    if (!desktopHandoff && !openElectronSocialWindow(ticketTargetUrl.toString())) {
+                    if (!openElectronSocialWindow(ticketTargetUrl.toString())) {
                         console.warn('[social] failed to deliver late sync ticket to Electron community window');
-                    } else if (desktopHandoff && !desktopHandoff.handled) {
-                        console.warn('[social] desktop community handoff found no community window');
                     }
                     return;
                 }
