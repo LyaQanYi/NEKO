@@ -208,29 +208,36 @@ def test_social_theme_bridge_reaches_only_held_windows_and_leaves_reload_gap_to_
     bridge = source[bridge_start:source.index("// 喵宇宙（社交平台）按钮", bridge_start)]
     script = r"""
 const assert = require('node:assert/strict');
-const listeners = new Map();
-const timers = [];
-const window = {
-    location: new URL('http://127.0.0.1:48911/'),
-    addEventListener(type, listener) {
-        if (!listeners.has(type)) listeners.set(type, []);
-        listeners.get(type).push(listener);
-    },
-    dispatch(type, event) {
-        for (const listener of listeners.get(type) || []) listener(event);
-    },
-};
-const document = { documentElement: { getAttribute: () => 'light' } };
-const setTimeout = (callback) => { timers.push(callback); };
 const makeCommunityWindow = () => ({ messages: [], postMessage(data, origin) { this.messages.push({ data, origin }); } });
+// Each Pet renderer load runs the bridge in a fresh realm: its own window,
+// listeners and timers. Only the community windows outlive a reload.
+function bootPetRenderer() {
+    const listeners = new Map();
+    const timers = [];
+    const window = {
+        location: new URL('http://127.0.0.1:48911/'),
+        addEventListener(type, listener) {
+            if (!listeners.has(type)) listeners.set(type, []);
+            listeners.get(type).push(listener);
+        },
+        dispatch(type, event) {
+            for (const listener of listeners.get(type) || []) listener(event);
+        },
+    };
+    const document = { documentElement: { getAttribute: () => 'light' } };
+    const setTimeout = (callback) => { timers.push(callback); };
 """ + bridge + r"""
+    return { window, timers, registerSocialThemeTarget };
+}
+
+const renderer = bootPetRenderer();
 const community = makeCommunityWindow();
-const target = registerSocialThemeTarget(community, 'https://community.example/feed?neko_theme=light');
+const target = renderer.registerSocialThemeTarget(community, 'https://community.example/feed?neko_theme=light');
 assert.deepEqual(target, { targetWindow: community, targetOrigin: 'https://community.example' });
 const fileWindow = makeCommunityWindow();
-assert.equal(registerSocialThemeTarget(fileWindow, 'file:///tmp/feed'), null);
+assert.equal(renderer.registerSocialThemeTarget(fileWindow, 'file:///tmp/feed'), null);
 
-window.dispatch('neko-theme-changed', { detail: { darkMode: true } });
+renderer.window.dispatch('neko-theme-changed', { detail: { darkMode: true } });
 assert.deepEqual(community.messages, [{
     data: { source: 'neko-desktop', type: 'theme-change', theme: 'dark' },
     origin: 'https://community.example',
@@ -239,22 +246,25 @@ assert.deepEqual(fileWindow.messages, []);
 
 // theme-ready is answered only for the held window at its registered origin.
 const strayWindow = makeCommunityWindow();
-window.dispatch('message', { source: community, origin: 'https://evil.example', data: { source: 'neko-community', type: 'theme-ready' } });
-window.dispatch('message', { source: strayWindow, origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
+renderer.window.dispatch('message', { source: community, origin: 'https://evil.example', data: { source: 'neko-community', type: 'theme-ready' } });
+renderer.window.dispatch('message', { source: strayWindow, origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
 assert.equal(community.messages.length, 1);
 assert.deepEqual(strayWindow.messages, []);
-window.dispatch('message', { source: community, origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
+renderer.window.dispatch('message', { source: community, origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
 assert.equal(community.messages.length, 2);
 
-// A rebuilt Pet renderer starts with an empty bridge: it no longer holds the
-// surviving community window, so later theme changes post nothing. NEKO-PC
-// main covers this gap by forwarding each dark-mode broadcast itself.
-window.__nekoSocialThemeBridgeState = null;
-window.dispatch('neko-theme-changed', { detail: { darkMode: false } });
+// A rebuilt Pet renderer loads the bridge again from scratch: it no longer
+// holds the surviving community window, so neither theme changes nor that
+// window's theme-ready reach it. NEKO-PC main covers this gap by forwarding
+// each dark-mode broadcast itself.
+const reloaded = bootPetRenderer();
+reloaded.window.dispatch('neko-theme-changed', { detail: { darkMode: false } });
+reloaded.window.dispatch('message', { source: community, origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
 assert.equal(community.messages.length, 2);
 assert.deepEqual(fileWindow.messages, []);
 assert.deepEqual(strayWindow.messages, []);
-assert.equal(timers.length, 0);
+assert.equal(renderer.timers.length, 0);
+assert.equal(reloaded.timers.length, 0);
 """
     result = run_node_stdin(node, script, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
