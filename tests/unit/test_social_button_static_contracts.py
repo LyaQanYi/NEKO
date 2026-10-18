@@ -227,18 +227,22 @@ const makeCommunityWindow = () => ({ messages: [], postMessage(data, origin) { t
 const community = makeCommunityWindow();
 const target = registerSocialThemeTarget(community, 'https://community.example/feed?neko_theme=light');
 assert.deepEqual(target, { targetWindow: community, targetOrigin: 'https://community.example' });
-assert.equal(registerSocialThemeTarget(makeCommunityWindow(), 'file:///tmp/feed'), null);
+const fileWindow = makeCommunityWindow();
+assert.equal(registerSocialThemeTarget(fileWindow, 'file:///tmp/feed'), null);
 
 window.dispatch('neko-theme-changed', { detail: { darkMode: true } });
 assert.deepEqual(community.messages, [{
     data: { source: 'neko-desktop', type: 'theme-change', theme: 'dark' },
     origin: 'https://community.example',
 }]);
+assert.deepEqual(fileWindow.messages, []);
 
 // theme-ready is answered only for the held window at its registered origin.
+const strayWindow = makeCommunityWindow();
 window.dispatch('message', { source: community, origin: 'https://evil.example', data: { source: 'neko-community', type: 'theme-ready' } });
-window.dispatch('message', { source: makeCommunityWindow(), origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
+window.dispatch('message', { source: strayWindow, origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
 assert.equal(community.messages.length, 1);
+assert.deepEqual(strayWindow.messages, []);
 window.dispatch('message', { source: community, origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
 assert.equal(community.messages.length, 2);
 
@@ -248,6 +252,8 @@ assert.equal(community.messages.length, 2);
 window.__nekoSocialThemeBridgeState = null;
 window.dispatch('neko-theme-changed', { detail: { darkMode: false } });
 assert.equal(community.messages.length, 2);
+assert.deepEqual(fileWindow.messages, []);
+assert.deepEqual(strayWindow.messages, []);
 assert.equal(timers.length, 0);
 """
     result = run_node_stdin(node, script, capture_output=True, check=False)
